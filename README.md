@@ -50,6 +50,7 @@ This POC demonstrates **network-based health detection** as a complementary sign
 - **`oc` CLI** installed and authenticated (`oc login`)
 - **Cluster-admin** or ability to:
   - Create namespaces
+  - Create a ClusterRole and ClusterRoleBinding for listing nodes
   - Grant `hostnetwork-v2` (or `hostnetwork`) SCC to a ServiceAccount
 - **Network access** from pods to worker node IPs on ports 19100 and 10250
 
@@ -139,7 +140,7 @@ Tails the logs of a monitor pod in real time:
 
 Removes all POC resources:
 
-1. Removes SCC bindings
+1. Removes SCC bindings and monitor node-read permissions
 2. Deletes the `network-health-poc` namespace (cascades to all resources)
 
 ```bash
@@ -247,7 +248,7 @@ oc adm cordon <node-name>
 This removes:
 - All pods (listeners and monitors)
 - The DaemonSet
-- The ServiceAccount
+- The ServiceAccounts and monitor node-read permissions
 - SCC bindings
 - The `network-health-poc` namespace
 

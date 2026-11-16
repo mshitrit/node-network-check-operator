@@ -14,6 +14,8 @@ set -euo pipefail
 ###############################################################################
 NAMESPACE="network-health-poc"
 SA_NAME="network-health-sa"
+MONITOR_SA_NAME="network-health-monitor"
+MONITOR_ROLE_NAME="${NAMESPACE}-node-reader"
 DAEMONSET_NAME="tcp-listener"
 HANDSHAKE_MONITOR_NAME="handshake-monitor"
 SERVICE_MONITOR_NAME="service-monitor"
@@ -52,6 +54,61 @@ check_oc() {
 
 namespace_exists() {
     oc get namespace "$NAMESPACE" &>/dev/null
+}
+
+###############################################################################
+# Shared monitor setup
+###############################################################################
+setup_monitor_access() {
+    info "Configuring node discovery access for monitor pods..."
+    oc apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${MONITOR_SA_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: network-health-poc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ${MONITOR_ROLE_NAME}
+  labels:
+    app: network-health-poc
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${MONITOR_ROLE_NAME}
+  labels:
+    app: network-health-poc
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ${MONITOR_ROLE_NAME}
+subjects:
+  - kind: ServiceAccount
+    name: ${MONITOR_SA_NAME}
+    namespace: ${NAMESPACE}
+EOF
+}
+
+# Emit the same discovery function into both monitor pod commands.
+node_discovery_script() {
+    cat <<'EOF'
+          discover_node_ips() {
+            wget -qO- https://kubernetes.default.svc/api/v1/nodes \
+              --header "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+              --no-check-certificate 2>/dev/null | \
+              grep -o '"address"[[:space:]]*:[[:space:]]*"[0-9.]*"' | \
+              grep -o '[0-9.]*' | sort -u
+          }
+EOF
 }
 
 ###############################################################################
@@ -178,6 +235,8 @@ cmd_setup_handshake_monitor() {
     fi
     info "Found ${listener_count} running listener pod(s)."
 
+    setup_monitor_access
+
     info "Deploying TCP handshake monitor pod..."
     oc apply -f - <<EOF
 apiVersion: v1
@@ -189,6 +248,7 @@ metadata:
     app: network-health-poc
     component: handshake-monitor
 spec:
+  serviceAccountName: ${MONITOR_SA_NAME}
   containers:
     - name: monitor
       image: ${BUSYBOX_IMAGE}
@@ -200,15 +260,10 @@ spec:
           echo "Monitoring port ${LISTENER_PORT} on all worker nodes"
           echo "Check interval: 5 seconds"
           echo "======================================="
+$(node_discovery_script)
           while true; do
             TIMESTAMP=\$(date '+%Y-%m-%d %H:%M:%S')
-            # Discover worker node IPs via DNS/API or from downward API
-            # We use the listener pod IPs from the environment
-            NODE_IPS=\$(wget -qO- https://kubernetes.default.svc/api/v1/nodes \
-              --header "Authorization: Bearer \$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
-              --no-check-certificate 2>/dev/null | \
-              grep -o '"address"[[:space:]]*:[[:space:]]*"[0-9.]*"' | \
-              grep -o '[0-9.]*' | sort -u)
+            NODE_IPS=\$(discover_node_ips)
 
             if [ -z "\$NODE_IPS" ]; then
               echo "[\$TIMESTAMP] WARN: Could not discover node IPs, retrying..."
@@ -259,6 +314,8 @@ cmd_setup_service_monitor() {
         exit 1
     fi
 
+    setup_monitor_access
+
     info "Deploying kubelet service monitor pod (port 10250)..."
     oc apply -f - <<EOF
 apiVersion: v1
@@ -270,6 +327,7 @@ metadata:
     app: network-health-poc
     component: service-monitor
 spec:
+  serviceAccountName: ${MONITOR_SA_NAME}
   containers:
     - name: monitor
       image: ${BUSYBOX_IMAGE}
@@ -281,13 +339,10 @@ spec:
           echo "Monitoring kubelet on port 10250 on all worker nodes"
           echo "Check interval: 5 seconds"
           echo "========================================="
+$(node_discovery_script)
           while true; do
             TIMESTAMP=\$(date '+%Y-%m-%d %H:%M:%S')
-            NODE_IPS=\$(wget -qO- https://kubernetes.default.svc/api/v1/nodes \
-              --header "Authorization: Bearer \$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
-              --no-check-certificate 2>/dev/null | \
-              grep -o '"address":"[0-9.]*"' | \
-              grep -o '[0-9.]*' | sort -u)
+            NODE_IPS=\$(discover_node_ips)
 
             if [ -z "\$NODE_IPS" ]; then
               echo "[\$TIMESTAMP] WARN: Could not discover node IPs, retrying..."
@@ -341,6 +396,10 @@ cmd_teardown() {
     oc adm policy remove-scc-from-user hostnetwork \
         "system:serviceaccount:${NAMESPACE}:${SA_NAME}" 2>/dev/null || true
     success "SCC bindings removed."
+
+    info "Removing monitor node discovery permissions..."
+    oc delete clusterrolebinding "$MONITOR_ROLE_NAME" --ignore-not-found
+    oc delete clusterrole "$MONITOR_ROLE_NAME" --ignore-not-found
 
     # Delete namespace (cascades to all resources within it)
     if namespace_exists; then
