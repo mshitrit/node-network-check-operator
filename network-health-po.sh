@@ -17,7 +17,7 @@ SA_NAME="network-health-sa"
 DAEMONSET_NAME="tcp-listener"
 HANDSHAKE_MONITOR_NAME="handshake-monitor"
 SERVICE_MONITOR_NAME="service-monitor"
-LISTENER_PORT=9100
+LISTENER_PORT=19100
 BUSYBOX_IMAGE="docker.io/library/busybox:latest"
 
 ###############################################################################
