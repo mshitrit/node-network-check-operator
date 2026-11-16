@@ -40,24 +40,24 @@ This POC demonstrates **network-based health detection** as a complementary sign
 
 | Component | Type | Network | Purpose |
 |-----------|------|---------|---------|
-| `tcp-listener` | DaemonSet | hostNetwork | Listens on port 19100 on each worker node |
-| `handshake-monitor` | Pod | cluster network | Probes port 19100 on every worker node |
-| `service-monitor` | Pod | cluster network | Probes kubelet port 10250 on every worker node |
+| `tcp-listener` | DaemonSet | hostNetwork | Listens on port 19100 on each node |
+| `handshake-monitor` | Pod | cluster network | Probes port 19100 on every node |
+| `service-monitor` | Pod | cluster network | Probes kubelet port 10250 on every node |
 
 ## Prerequisites
 
-- **OpenShift cluster** (4.x) with worker nodes
+- **OpenShift cluster** (4.x)
 - **`oc` CLI** installed and authenticated (`oc login`)
 - **Cluster-admin** or ability to:
   - Create namespaces
   - Create a ClusterRole and ClusterRoleBinding for listing nodes
   - Grant `hostnetwork-v2` (or `hostnetwork`) SCC to a ServiceAccount
-- **Network access** from pods to worker node IPs on ports 19100 and 10250
+- **Network access** from pods to node IPs on ports 19100 and 10250
 
 ## Quick Start
 
 ```bash
-# 1. Deploy listener agents on all worker nodes
+# 1. Deploy listener agents on all nodes
 ./network-health-poc.sh setup-listeners
 
 # 2. Start the handshake monitor (probes listeners on :19100)
@@ -85,7 +85,7 @@ Deploys the infrastructure for TCP handshake monitoring:
 
 1. Creates the `network-health-poc` namespace
 2. Creates a ServiceAccount and binds it to the `hostnetwork-v2` SCC
-3. Deploys a DaemonSet that runs a busybox TCP listener (`nc -l -p 19100`) on every worker node using `hostNetwork: true`
+3. Deploys a DaemonSet that runs a busybox TCP listener (`nc -l -p 19100`) on every node using `hostNetwork: true`
 
 ```bash
 ./network-health-poc.sh setup-listeners
@@ -93,9 +93,9 @@ Deploys the infrastructure for TCP handshake monitoring:
 
 ### `setup-handshake-monitor`
 
-Deploys a single pod that continuously probes port 19100 on every worker node:
+Deploys a single pod that continuously probes port 19100 on every node:
 
-- Auto-discovers worker node IPs via the Kubernetes API
+- Auto-discovers node IPs via the Kubernetes API
 - Runs `nc -z -w 2 <node-ip> 19100` every 5 seconds
 - Logs `HEALTHY` or `UNHEALTHY` with timestamps
 
@@ -109,7 +109,7 @@ Deploys a single pod that continuously probes port 19100 on every worker node:
 
 Deploys a single pod that continuously probes the kubelet on port 10250:
 
-- Auto-discovers worker node IPs via the Kubernetes API
+- Auto-discovers node IPs via the Kubernetes API
 - Runs `nc -z -w 2 <node-ip> 10250` every 5 seconds
 - Logs `HEALTHY` or `UNHEALTHY` with timestamps
 
@@ -154,7 +154,7 @@ Removes all POC resources:
 The TCP three-way handshake is the foundation of every TCP connection:
 
 ```
-Monitor Pod           Worker Node (port 19100)
+Monitor Pod           Node (port 19100)
      |                        |
      |-------- SYN ---------> |   1. Monitor initiates connection
      |<------ SYN-ACK ------- |   2. Listener acknowledges
@@ -176,7 +176,7 @@ This catches failures that kubelet self-reporting cannot detect, because the pro
 The kubelet exposes an HTTPS API on port 10250 on every node. The service monitor uses the same `nc -z` technique but targets this existing port instead of a dedicated listener:
 
 ```
-Monitor Pod           Worker Node (port 10250)
+Monitor Pod           Node (port 10250)
      |                        |
      |-------- SYN ---------> |   TCP connect to kubelet port
      |<------ SYN-ACK ------- |   Kubelet's TCP stack responds

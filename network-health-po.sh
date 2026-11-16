@@ -112,12 +112,12 @@ EOF
 }
 
 ###############################################################################
-# setup-listeners: Deploy TCP listener DaemonSet on worker nodes
+# setup-listeners: Deploy TCP listener DaemonSet on all nodes
 ###############################################################################
 cmd_setup_listeners() {
     check_oc
 
-    info "Setting up TCP listener pods on all worker nodes..."
+    info "Setting up TCP listener pods on all nodes..."
 
     # Create namespace
     if namespace_exists; then
@@ -151,7 +151,7 @@ EOF
     success "SCC binding applied."
 
     # Deploy DaemonSet
-    info "Deploying TCP listener DaemonSet on worker nodes (port ${LISTENER_PORT})..."
+    info "Deploying TCP listener DaemonSet on all nodes (port ${LISTENER_PORT})..."
     oc apply -f - <<EOF
 apiVersion: apps/v1
 kind: DaemonSet
@@ -174,8 +174,6 @@ spec:
     spec:
       serviceAccountName: ${SA_NAME}
       hostNetwork: true
-      nodeSelector:
-        node-role.kubernetes.io/worker: ""
       tolerations:
         - operator: Exists
       containers:
@@ -211,7 +209,7 @@ EOF
     fi
 
     echo ""
-    success "Listener setup complete. Each worker node now has a TCP listener on port ${LISTENER_PORT}."
+    success "Listener setup complete. Each node now has a TCP listener on port ${LISTENER_PORT}."
     info "Next step: run '$0 setup-handshake-monitor' to start monitoring."
 }
 
@@ -257,7 +255,7 @@ spec:
         - -c
         - |
           echo "=== TCP Handshake Monitor Starting ==="
-          echo "Monitoring port ${LISTENER_PORT} on all worker nodes"
+          echo "Monitoring port ${LISTENER_PORT} on all nodes"
           echo "Check interval: 5 seconds"
           echo "======================================="
 $(node_discovery_script)
@@ -336,7 +334,7 @@ spec:
         - -c
         - |
           echo "=== Kubelet Service Monitor Starting ==="
-          echo "Monitoring kubelet on port 10250 on all worker nodes"
+          echo "Monitoring kubelet on port 10250 on all nodes"
           echo "Check interval: 5 seconds"
           echo "========================================="
 $(node_discovery_script)
@@ -475,10 +473,10 @@ cmd_status() {
     fi
     echo ""
 
-    # Worker nodes
-    echo -e "${BOLD}--- Worker Nodes ---${NC}"
-    oc get nodes -l node-role.kubernetes.io/worker -o wide 2>/dev/null || \
-        warn "Could not list worker nodes."
+    # Nodes
+    echo -e "${BOLD}--- Nodes ---${NC}"
+    oc get nodes -o wide 2>/dev/null || \
+        warn "Could not list nodes."
     echo ""
 }
 
@@ -525,7 +523,7 @@ ${BOLD}Usage:${NC}
   $0 <command>
 
 ${BOLD}Commands:${NC}
-  setup-listeners          Deploy TCP listener DaemonSet on all worker nodes
+  setup-listeners          Deploy TCP listener DaemonSet on all nodes
   setup-handshake-monitor  Deploy TCP handshake monitor pod (requires listeners)
   setup-service-monitor    Deploy kubelet service monitor pod (checks port 10250)
   teardown                 Remove all POC resources
