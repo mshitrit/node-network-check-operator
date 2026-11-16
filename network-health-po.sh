@@ -207,7 +207,7 @@ spec:
             NODE_IPS=\$(wget -qO- https://kubernetes.default.svc/api/v1/nodes \
               --header "Authorization: Bearer \$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
               --no-check-certificate 2>/dev/null | \
-              grep -o '"address":"[0-9.]*"' | \
+              grep -o '"address"[[:space:]]*:[[:space:]]*"[0-9.]*"' | \
               grep -o '[0-9.]*' | sort -u)
 
             if [ -z "\$NODE_IPS" ]; then
