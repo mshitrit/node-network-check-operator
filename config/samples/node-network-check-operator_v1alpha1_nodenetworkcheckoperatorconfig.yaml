@@ -1,0 +1,12 @@
+apiVersion: node-network-check-operator.medik8s.io/v1alpha1
+kind: NodeNetworkCheckOperatorConfig
+metadata:
+  labels:
+    app.kubernetes.io/name: nodenetworkcheckoperatorconfig
+    app.kubernetes.io/instance: nodenetworkcheckoperatorconfig-sample
+    app.kubernetes.io/part-of: node-network-check-operator
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: node-network-check-operator
+  name: nodenetworkcheckoperatorconfig-sample
+spec:
+  # TODO(user): Add fields here

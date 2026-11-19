@@ -10,4 +10,14 @@ plugins:
   scorecard.sdk.operatorframework.io/v2: {}
 projectName: node-network-check-operator
 repo: github.com/mshitrit/node-network-check-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: medik8s.io
+  group: node-network-check-operator
+  kind: NodeNetworkCheckOperatorConfig
+  path: github.com/mshitrit/node-network-check-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

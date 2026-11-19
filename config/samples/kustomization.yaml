@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- node-network-check-operator_v1alpha1_nodenetworkcheckoperatorconfig.yaml
+#+kubebuilder:scaffold:manifestskustomizesamples

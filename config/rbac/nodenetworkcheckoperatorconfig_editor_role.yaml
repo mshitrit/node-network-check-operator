@@ -1,0 +1,31 @@
+# permissions for end users to edit nodenetworkcheckoperatorconfigs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: nodenetworkcheckoperatorconfig-editor-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: node-network-check-operator
+    app.kubernetes.io/part-of: node-network-check-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: nodenetworkcheckoperatorconfig-editor-role
+rules:
+- apiGroups:
+  - node-network-check-operator.medik8s.io
+  resources:
+  - nodenetworkcheckoperatorconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - node-network-check-operator.medik8s.io
+  resources:
+  - nodenetworkcheckoperatorconfigs/status
+  verbs:
+  - get
