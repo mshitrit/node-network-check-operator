@@ -8,4 +8,6 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/created-by: node-network-check-operator
   name: nodenetworkcheckoperatorconfig-sample
-spec: {}
+spec:
+  # Network detection is not implemented yet. Options: Service, TCPListener, Both.
+  networkDetectionMode: Service

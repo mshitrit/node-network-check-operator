@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,9 +48,20 @@ type NodeNetworkCheckOperatorConfigReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.16.3/pkg/reconcile
 func (r *NodeNetworkCheckOperatorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx).WithValues("config", req.NamespacedName)
 
-	// TODO(user): your logic here
+	config := &nodenetworkcheckoperatorv1alpha1.NodeNetworkCheckOperatorConfig{}
+	if err := r.Get(ctx, req.NamespacedName, config); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("Configuration no longer exists")
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("Reconciling configuration",
+		"networkDetectionMode", config.Spec.NetworkDetectionMode,
+	)
 
 	return ctrl.Result{}, nil
 }

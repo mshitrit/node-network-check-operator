@@ -17,12 +17,17 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,6 +84,59 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+
+		It("logs the current detection mode when the configuration changes", func() {
+			var output bytes.Buffer
+			logCtx := log.IntoContext(ctx, zap.New(zap.WriteTo(&output)))
+			controllerReconciler := &NodeNetworkCheckOperatorConfigReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			request := reconcile.Request{NamespacedName: typeNamespacedName}
+
+			config := &nodenetworkcheckoperatorv1alpha1.NodeNetworkCheckOperatorConfig{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, config)).To(Succeed())
+			Expect(config.Spec.NetworkDetectionMode).NotTo(BeNil())
+			Expect(*config.Spec.NetworkDetectionMode).To(Equal(nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeService))
+			_, err := controllerReconciler.Reconcile(logCtx, request)
+			Expect(err).NotTo(HaveOccurred())
+			var entry map[string]interface{}
+			Expect(json.NewDecoder(&output).Decode(&entry)).To(Succeed())
+			Expect(entry).To(HaveKeyWithValue("networkDetectionMode", "Service"))
+
+			for _, mode := range []nodenetworkcheckoperatorv1alpha1.NetworkDetectionMode{
+				nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeTCPListener,
+				nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeBoth,
+				nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeService,
+			} {
+				Expect(k8sClient.Get(ctx, typeNamespacedName, config)).To(Succeed())
+				config.Spec.NetworkDetectionMode = &mode
+				Expect(k8sClient.Update(ctx, config)).To(Succeed())
+				_, err = controllerReconciler.Reconcile(logCtx, request)
+				Expect(err).NotTo(HaveOccurred())
+				entry = nil
+				Expect(json.NewDecoder(&output).Decode(&entry)).To(Succeed())
+				Expect(entry).To(HaveKeyWithValue("networkDetectionMode", string(mode)))
+			}
+
+			invalid := nodenetworkcheckoperatorv1alpha1.NetworkDetectionMode("Invalid")
+			config.Spec.NetworkDetectionMode = &invalid
+			Expect(errors.IsInvalid(k8sClient.Update(ctx, config))).To(BeTrue())
+		})
+
+		It("defaults to Service when spec is omitted", func() {
+			resource := &unstructured.Unstructured{}
+			resource.SetGroupVersionKind(nodenetworkcheckoperatorv1alpha1.GroupVersion.WithKind("NodeNetworkCheckOperatorConfig"))
+			resource.SetName("without-spec")
+			resource.SetNamespace("default")
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, resource) }()
+
+			mode, found, err := unstructured.NestedString(resource.Object, "spec", "networkDetectionMode")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(mode).To(Equal("Service"))
 		})
 	})
 })

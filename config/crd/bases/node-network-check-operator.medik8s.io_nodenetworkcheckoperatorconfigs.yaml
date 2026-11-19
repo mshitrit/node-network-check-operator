@@ -38,12 +38,24 @@ spec:
           metadata:
             type: object
           spec:
+            default: {}
             description: NodeNetworkCheckOperatorConfigSpec defines the desired state
               of NodeNetworkCheckOperatorConfig
             properties:
               foo:
                 description: Foo is an example field of NodeNetworkCheckOperatorConfig.
                   Edit nodenetworkcheckoperatorconfig_types.go to remove/update
+                type: string
+              networkDetectionMode:
+                default: Service
+                description: |-
+                  NetworkDetectionMode selects Service, TCPListener, or Both. Service uses an
+                  existing service such as the kubelet; TCPListener uses a dedicated listener.
+                  Defaults to Service. Network detection is not yet implemented.
+                enum:
+                - Service
+                - TCPListener
+                - Both
                 type: string
             type: object
           status:

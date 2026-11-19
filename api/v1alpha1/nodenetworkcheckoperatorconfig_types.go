@@ -23,6 +23,18 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// NetworkDetectionMode selects how node network health is checked.
+type NetworkDetectionMode string
+
+const (
+	// NetworkDetectionModeService uses an existing service on each node.
+	NetworkDetectionModeService NetworkDetectionMode = "Service"
+	// NetworkDetectionModeTCPListener uses a dedicated TCP listener on each node.
+	NetworkDetectionModeTCPListener NetworkDetectionMode = "TCPListener"
+	// NetworkDetectionModeBoth uses both detection methods.
+	NetworkDetectionModeBoth NetworkDetectionMode = "Both"
+)
+
 // NodeNetworkCheckOperatorConfigSpec defines the desired state of NodeNetworkCheckOperatorConfig
 type NodeNetworkCheckOperatorConfigSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
@@ -30,6 +42,14 @@ type NodeNetworkCheckOperatorConfigSpec struct {
 
 	// Foo is an example field of NodeNetworkCheckOperatorConfig. Edit nodenetworkcheckoperatorconfig_types.go to remove/update
 	Foo string `json:"foo,omitempty"`
+
+	// NetworkDetectionMode selects Service, TCPListener, or Both. Service uses an
+	// existing service such as the kubelet; TCPListener uses a dedicated listener.
+	// Defaults to Service. Network detection is not yet implemented.
+	// +kubebuilder:validation:Enum=Service;TCPListener;Both
+	// +kubebuilder:default=Service
+	// +optional
+	NetworkDetectionMode *NetworkDetectionMode `json:"networkDetectionMode,omitempty"`
 }
 
 // NodeNetworkCheckOperatorConfigStatus defines the observed state of NodeNetworkCheckOperatorConfig
@@ -46,6 +66,7 @@ type NodeNetworkCheckOperatorConfig struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// +kubebuilder:default={}
 	Spec   NodeNetworkCheckOperatorConfigSpec   `json:"spec,omitempty"`
 	Status NodeNetworkCheckOperatorConfigStatus `json:"status,omitempty"`
 }
