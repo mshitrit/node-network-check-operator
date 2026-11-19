@@ -11,3 +11,5 @@ metadata:
 spec:
   # Network detection is not implemented yet. Options: Service, TCPListener, Both.
   networkDetectionMode: Service
+  networkCheckIntervalSeconds: 5
+  consecutiveFailuresThreshold: 3

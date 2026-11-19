@@ -50,6 +50,20 @@ type NodeNetworkCheckOperatorConfigSpec struct {
 	// +kubebuilder:default=Service
 	// +optional
 	NetworkDetectionMode *NetworkDetectionMode `json:"networkDetectionMode,omitempty"`
+
+	// NetworkCheckIntervalSeconds is the time in seconds between network checks.
+	// Defaults to 5 seconds.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=5
+	// +optional
+	NetworkCheckIntervalSeconds *int32 `json:"networkCheckIntervalSeconds,omitempty"`
+
+	// ConsecutiveFailuresThreshold is the number of consecutive failed network
+	// checks after which a node is considered unhealthy. Defaults to 3.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=3
+	// +optional
+	ConsecutiveFailuresThreshold *int32 `json:"consecutiveFailuresThreshold,omitempty"`
 }
 
 // NodeNetworkCheckOperatorConfigStatus defines the observed state of NodeNetworkCheckOperatorConfig

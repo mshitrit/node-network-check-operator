@@ -42,10 +42,26 @@ spec:
             description: NodeNetworkCheckOperatorConfigSpec defines the desired state
               of NodeNetworkCheckOperatorConfig
             properties:
+              consecutiveFailuresThreshold:
+                default: 3
+                description: |-
+                  ConsecutiveFailuresThreshold is the number of consecutive failed network
+                  checks after which a node is considered unhealthy. Defaults to 3.
+                format: int32
+                minimum: 1
+                type: integer
               foo:
                 description: Foo is an example field of NodeNetworkCheckOperatorConfig.
                   Edit nodenetworkcheckoperatorconfig_types.go to remove/update
                 type: string
+              networkCheckIntervalSeconds:
+                default: 5
+                description: |-
+                  NetworkCheckIntervalSeconds is the time in seconds between network checks.
+                  Defaults to 5 seconds.
+                format: int32
+                minimum: 1
+                type: integer
               networkDetectionMode:
                 default: Service
                 description: |-

@@ -86,7 +86,7 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 
-		It("logs the current detection mode when the configuration changes", func() {
+		It("logs the current settings when the configuration changes", func() {
 			var output bytes.Buffer
 			logCtx := log.IntoContext(ctx, zap.New(zap.WriteTo(&output)))
 			controllerReconciler := &NodeNetworkCheckOperatorConfigReconciler{
@@ -99,12 +99,19 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, config)).To(Succeed())
 			Expect(config.Spec.NetworkDetectionMode).NotTo(BeNil())
 			Expect(*config.Spec.NetworkDetectionMode).To(Equal(nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeService))
+			Expect(config.Spec.NetworkCheckIntervalSeconds).NotTo(BeNil())
+			Expect(*config.Spec.NetworkCheckIntervalSeconds).To(Equal(int32(5)))
+			Expect(config.Spec.ConsecutiveFailuresThreshold).NotTo(BeNil())
+			Expect(*config.Spec.ConsecutiveFailuresThreshold).To(Equal(int32(3)))
 			_, err := controllerReconciler.Reconcile(logCtx, request)
 			Expect(err).NotTo(HaveOccurred())
 			var entry map[string]interface{}
 			Expect(json.NewDecoder(&output).Decode(&entry)).To(Succeed())
 			Expect(entry).To(HaveKeyWithValue("networkDetectionMode", "Service"))
+			Expect(entry).To(HaveKeyWithValue("networkCheckIntervalSeconds", float64(5)))
+			Expect(entry).To(HaveKeyWithValue("consecutiveFailuresThreshold", float64(3)))
 
+			interval, threshold := int32(10), int32(4)
 			for _, mode := range []nodenetworkcheckoperatorv1alpha1.NetworkDetectionMode{
 				nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeTCPListener,
 				nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeBoth,
@@ -112,12 +119,16 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			} {
 				Expect(k8sClient.Get(ctx, typeNamespacedName, config)).To(Succeed())
 				config.Spec.NetworkDetectionMode = &mode
+				config.Spec.NetworkCheckIntervalSeconds = &interval
+				config.Spec.ConsecutiveFailuresThreshold = &threshold
 				Expect(k8sClient.Update(ctx, config)).To(Succeed())
 				_, err = controllerReconciler.Reconcile(logCtx, request)
 				Expect(err).NotTo(HaveOccurred())
 				entry = nil
 				Expect(json.NewDecoder(&output).Decode(&entry)).To(Succeed())
 				Expect(entry).To(HaveKeyWithValue("networkDetectionMode", string(mode)))
+				Expect(entry).To(HaveKeyWithValue("networkCheckIntervalSeconds", float64(10)))
+				Expect(entry).To(HaveKeyWithValue("consecutiveFailuresThreshold", float64(4)))
 			}
 
 			invalid := nodenetworkcheckoperatorv1alpha1.NetworkDetectionMode("Invalid")
@@ -125,7 +136,7 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			Expect(errors.IsInvalid(k8sClient.Update(ctx, config))).To(BeTrue())
 		})
 
-		It("defaults to Service when spec is omitted", func() {
+		It("uses the defaults when spec is omitted", func() {
 			resource := &unstructured.Unstructured{}
 			resource.SetGroupVersionKind(nodenetworkcheckoperatorv1alpha1.GroupVersion.WithKind("NodeNetworkCheckOperatorConfig"))
 			resource.SetName("without-spec")
@@ -137,6 +148,36 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(mode).To(Equal("Service"))
+
+			interval, found, err := unstructured.NestedInt64(resource.Object, "spec", "networkCheckIntervalSeconds")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(interval).To(Equal(int64(5)))
+
+			threshold, found, err := unstructured.NestedInt64(resource.Object, "spec", "consecutiveFailuresThreshold")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(threshold).To(Equal(int64(3)))
+		})
+
+		It("accepts positive settings and rejects zero or negative values", func() {
+			config := &nodenetworkcheckoperatorv1alpha1.NodeNetworkCheckOperatorConfig{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, config)).To(Succeed())
+
+			for _, invalid := range []int32{0, -1} {
+				candidate := config.DeepCopy()
+				candidate.Spec.NetworkCheckIntervalSeconds = &invalid
+				Expect(errors.IsInvalid(k8sClient.Update(ctx, candidate))).To(BeTrue())
+
+				candidate = config.DeepCopy()
+				candidate.Spec.ConsecutiveFailuresThreshold = &invalid
+				Expect(errors.IsInvalid(k8sClient.Update(ctx, candidate))).To(BeTrue())
+			}
+
+			minimum := int32(1)
+			config.Spec.NetworkCheckIntervalSeconds = &minimum
+			config.Spec.ConsecutiveFailuresThreshold = &minimum
+			Expect(k8sClient.Update(ctx, config)).To(Succeed())
 		})
 	})
 })

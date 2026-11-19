@@ -61,6 +61,8 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) Reconcile(ctx context.Context
 
 	logger.Info("Reconciling configuration",
 		"networkDetectionMode", config.Spec.NetworkDetectionMode,
+		"networkCheckIntervalSeconds", config.Spec.NetworkCheckIntervalSeconds,
+		"consecutiveFailuresThreshold", config.Spec.ConsecutiveFailuresThreshold,
 	)
 
 	return ctrl.Result{}, nil
