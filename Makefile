@@ -5,6 +5,9 @@
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
 VERSION ?= 0.0.1
 
+# Name used by the shared medik8s development tools.
+OPERATOR_NAME ?= node-network-check-operator
+
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
 # To re-generate a bundle for other specific channels without changing the standard setup, you can:
@@ -48,7 +51,7 @@ endif
 
 # Set the Operator SDK version to use. By default, what is installed on the system is used.
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
-OPERATOR_SDK_VERSION ?= v1.34.0
+OPERATOR_SDK_VERSION ?= v1.42.2
 
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
@@ -62,11 +65,12 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
-# CONTAINER_TOOL defines the container tool to be used for building images.
-# Be aware that the target commands are only tested with Docker which is
-# scaffolded by default. However, you might want to replace it to use other
-# tools. (i.e. podman)
+# The shared development tools use Podman by default, like other medik8s operators.
+ifneq ($(filter dev-%,$(MAKECMDGOALS)),)
+CONTAINER_TOOL ?= podman
+else
 CONTAINER_TOOL ?= docker
+endif
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
@@ -256,13 +260,16 @@ endif
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
+	@backup=$$(mktemp); \
+	cp config/manager/kustomization.yaml "$$backup"; \
+	trap 'cp "$$backup" config/manager/kustomization.yaml; rm -f "$$backup"' EXIT; \
+	(cd config/manager && $(KUSTOMIZE) edit set image controller="$(IMG)"); \
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build
-bundle-build: ## Build the bundle image.
-	docker build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+bundle-build: bundle ## Generate the bundle and build its image.
+	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image.
@@ -308,3 +315,34 @@ catalog-build: opm ## Build a catalog image.
 .PHONY: catalog-push
 catalog-push: ## Push a catalog image.
 	$(MAKE) docker-push IMG=$(CATALOG_IMG)
+
+# Shared medik8s development targets. Honor an explicitly supplied TOOLS_DIR;
+# otherwise use a sibling checkout or download the tools on first use.
+ifeq ($(origin TOOLS_DIR), undefined)
+  ifneq ($(wildcard $(abspath ../tools)/dev/dev.mk),)
+    TOOLS_DIR := $(abspath ../tools)
+  else
+    TOOLS_DIR := $(CURDIR)/.tools
+  endif
+endif
+DEV_MK := $(TOOLS_DIR)/dev/dev.mk
+
+# Normal build and test targets do not require the shared development tools.
+ifneq ($(filter dev-% help,$(MAKECMDGOALS)),)
+  -include $(DEV_MK)
+endif
+
+ifeq ($(wildcard $(DEV_MK)),)
+dev-%:
+	@if [ "$(TOOLS_DIR)" != "$(CURDIR)/.tools" ]; then \
+		echo "Error: $(DEV_MK) not found. Set TOOLS_DIR to a medik8s/tools checkout." >&2; \
+		exit 1; \
+	fi
+	@if [ -e "$(TOOLS_DIR)" ]; then \
+		echo "Error: $(TOOLS_DIR) exists but does not contain dev/dev.mk." >&2; \
+		exit 1; \
+	fi
+	@git clone --depth 1 https://github.com/medik8s/tools.git "$(TOOLS_DIR)"
+	@test -f "$(DEV_MK)" || { echo "Error: $(DEV_MK) not found after clone." >&2; exit 1; }
+	@$(MAKE) --no-print-directory $@
+endif

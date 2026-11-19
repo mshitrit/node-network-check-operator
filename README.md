@@ -14,6 +14,50 @@
 
 With `GOTOOLCHAIN=auto`, Go uses a newer installed toolchain or downloads the preferred version when needed.
 
+### Deploy with the medik8s development tools
+
+The shared [medik8s development tools](https://github.com/medik8s/tools/tree/main/dev) provide the same `dev-*` targets used by the other operators. To use an up-to-date existing checkout, set `TOOLS_DIR` to its path:
+
+```sh
+export TOOLS_DIR=/path/to/medik8s/tools
+make dev-help
+```
+
+If `TOOLS_DIR` is not set, a sibling `../tools` checkout is used when available; otherwise the tools are downloaded to `.tools/` on the first `dev-*` command. For `dev-*` targets, Podman is the default container tool; set `CONTAINER_TOOL=docker` to use Docker instead.
+
+For a local Kind cluster:
+
+```sh
+make dev-setup
+make dev-deploy
+make dev-logs
+```
+
+For an existing cluster:
+
+```sh
+export KUBECONFIG=/path/to/kubeconfig
+export SKIP_KIND=true
+make dev-setup
+make dev-deploy
+make dev-logs
+```
+
+`dev-setup` configures the selected cluster; `dev-deploy` pushes the development image to `ttl.sh` by default for external clusters.
+
+For a development OLM installation on an existing cluster with OLM installed:
+
+```sh
+export KUBECONFIG=/path/to/kubeconfig
+export SKIP_KIND=true
+make dev-olm-deploy DEV_REGISTRY=ttl.sh \
+  DEV_OLM_OPERATOR_NAMESPACE=node-network-check-operator-system
+```
+
+The shared OLM target cleans up an existing installation of this package with `--delete-all` before installing. This can remove its CRDs and custom resources. The `ttl.sh` images expire after two hours by default.
+
+The controller is currently a scaffold; deploying it does not yet start network probes.
+
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**
 
