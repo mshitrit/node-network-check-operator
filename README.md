@@ -7,10 +7,12 @@
 ## Getting Started
 
 ### Prerequisites
-- go version v1.20.0+
+- Go 1.26.0 or newer (the preferred toolchain is Go 1.26.5).
 - docker version 17.03+.
 - kubectl version v1.11.3+.
 - Access to a Kubernetes v1.11.3+ cluster.
+
+With `GOTOOLCHAIN=auto`, Go uses a newer installed toolchain or downloads the preferred version when needed.
 
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**
