@@ -56,7 +56,22 @@ make dev-olm-deploy DEV_REGISTRY=ttl.sh \
 
 The shared OLM target cleans up an existing installation of this package with `--delete-all` before installing. This can remove its CRDs and custom resources. The `ttl.sh` images expire after two hours by default.
 
-The controller is currently a scaffold; deploying it does not yet start network probes.
+### Service network checks
+
+Create a `NodeNetworkCheckOperatorConfig` to start checks. In `Service` or `Both`
+mode, the operator attempts a TCP connection to the kubelet on port 10250 for
+each node. The sample configuration uses a five-second interval and marks a node
+unhealthy after three consecutive failures. Both settings are configurable.
+
+The operator sets the node condition `NNCOServiceUnhealthy=True` after the
+failure threshold and removes it when the check succeeds. It also removes its
+condition when service checks are disabled or the last configuration is deleted.
+Nodes without a usable IP address are skipped. If multiple configurations exist,
+the oldest is active. Failure counts reset when the operator restarts. TCP
+listener checks are not implemented yet.
+
+Checks run from the operator pod, so a network problem affecting that pod can
+make healthy nodes appear unreachable.
 
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**

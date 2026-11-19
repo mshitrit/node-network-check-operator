@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/created-by: node-network-check-operator
   name: nodenetworkcheckoperatorconfig-sample
 spec:
-  # Network detection is not implemented yet. Options: Service, TCPListener, Both.
+  # Options: Service, TCPListener, Both. TCPListener checks are not implemented yet.
   networkDetectionMode: Service
   networkCheckIntervalSeconds: 5
   consecutiveFailuresThreshold: 3

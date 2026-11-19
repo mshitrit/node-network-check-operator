@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -35,6 +36,10 @@ const (
 	NetworkDetectionModeBoth NetworkDetectionMode = "Both"
 )
 
+// NodeConditionServiceUnhealthy is set when the node's kubelet service cannot
+// be reached after the configured number of consecutive checks.
+const NodeConditionServiceUnhealthy corev1.NodeConditionType = "NNCOServiceUnhealthy"
+
 // NodeNetworkCheckOperatorConfigSpec defines the desired state of NodeNetworkCheckOperatorConfig
 type NodeNetworkCheckOperatorConfigSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
@@ -45,7 +50,7 @@ type NodeNetworkCheckOperatorConfigSpec struct {
 
 	// NetworkDetectionMode selects Service, TCPListener, or Both. Service uses an
 	// existing service such as the kubelet; TCPListener uses a dedicated listener.
-	// Defaults to Service. Network detection is not yet implemented.
+	// Defaults to Service. TCPListener checks are not implemented yet.
 	// +kubebuilder:validation:Enum=Service;TCPListener;Both
 	// +kubebuilder:default=Service
 	// +optional

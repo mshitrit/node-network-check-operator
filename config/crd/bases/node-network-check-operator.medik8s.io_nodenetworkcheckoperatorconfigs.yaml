@@ -67,7 +67,7 @@ spec:
                 description: |-
                   NetworkDetectionMode selects Service, TCPListener, or Both. Service uses an
                   existing service such as the kubelet; TCPListener uses a dedicated listener.
-                  Defaults to Service. Network detection is not yet implemented.
+                  Defaults to Service. TCPListener checks are not implemented yet.
                 enum:
                 - Service
                 - TCPListener
