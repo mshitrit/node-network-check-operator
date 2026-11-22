@@ -158,6 +158,21 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(threshold).To(Equal(int64(3)))
+
+			port, found, err := unstructured.NestedInt64(resource.Object, "spec", "tcpListenerPort")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(port).To(Equal(int64(19100)))
+		})
+
+		It("rejects privileged, reserved, and out-of-range listener ports", func() {
+			config := &nodenetworkcheckoperatorv1alpha1.NodeNetworkCheckOperatorConfig{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, config)).To(Succeed())
+			for _, port := range []int32{1023, 10250, 65536} {
+				candidate := config.DeepCopy()
+				candidate.Spec.TCPListenerPort = &port
+				Expect(errors.IsInvalid(k8sClient.Update(ctx, candidate))).To(BeTrue())
+			}
 		})
 
 		It("accepts positive settings and rejects zero or negative values", func() {

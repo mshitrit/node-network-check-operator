@@ -91,6 +91,11 @@ func (in *NodeNetworkCheckOperatorConfigSpec) DeepCopyInto(out *NodeNetworkCheck
 		*out = new(NetworkDetectionMode)
 		**out = **in
 	}
+	if in.TCPListenerPort != nil {
+		in, out := &in.TCPListenerPort, &out.TCPListenerPort
+		*out = new(int32)
+		**out = **in
+	}
 	if in.NetworkCheckIntervalSeconds != nil {
 		in, out := &in.NetworkCheckIntervalSeconds, &out.NetworkCheckIntervalSeconds
 		*out = new(int32)

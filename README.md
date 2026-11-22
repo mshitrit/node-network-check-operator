@@ -56,22 +56,28 @@ make dev-olm-deploy DEV_REGISTRY=ttl.sh \
 
 The shared OLM target cleans up an existing installation of this package with `--delete-all` before installing. This can remove its CRDs and custom resources. The `ttl.sh` images expire after two hours by default.
 
-### Service network checks
+### Network checks
 
-Create a `NodeNetworkCheckOperatorConfig` to start checks. In `Service` or `Both`
-mode, the operator attempts a TCP connection to the kubelet on port 10250 for
-each node. The sample configuration uses a five-second interval and marks a node
-unhealthy after three consecutive failures. Both settings are configurable.
+Create a `NodeNetworkCheckOperatorConfig` to start checks. If multiple
+configurations exist, the oldest is active. The interval and consecutive
+failure threshold default to five seconds and three failures.
 
-The operator sets the node condition `NNCOServiceUnhealthy=True` after the
-failure threshold and removes it when the check succeeds. It also removes its
-condition when service checks are disabled or the last configuration is deleted.
-Nodes without a usable IP address are skipped. If multiple configurations exist,
-the oldest is active. Failure counts reset when the operator restarts. TCP
-listener checks are not implemented yet.
+- `Service` starts `service-monitor`, which checks kubelet TCP port 10250.
+- `TCPListener` deploys `tcp-listener` on each Linux node and starts
+  `handshake-monitor`. Set `spec.tcpListenerPort` to change the default port
+  of 19100. The port must be available on every node.
+- `Both` runs the listener and both monitors.
 
-Checks run from the operator pod, so a network problem affecting that pod can
-make healthy nodes appear unreachable.
+Changes to the active config replace the workloads and reset the failure counts.
+The monitors publish `NNCOServiceUnhealthy` and `NNCOTCPListenerUnhealthy`
+respectively, and remove their condition when a check succeeds. Disabling a
+monitor or deleting the last config clears the corresponding condition.
+
+The listener requires host networking. The OpenShift manifests grant
+`hostnetwork-v2` to the listener's dedicated service account. On other
+Kubernetes clusters, the install namespace must allow host networking to use
+listener mode. A local `make run` without workload settings runs the service
+check in the controller process.
 
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**

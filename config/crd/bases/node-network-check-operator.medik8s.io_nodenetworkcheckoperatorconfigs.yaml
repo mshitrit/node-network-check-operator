@@ -67,12 +67,24 @@ spec:
                 description: |-
                   NetworkDetectionMode selects Service, TCPListener, or Both. Service uses an
                   existing service such as the kubelet; TCPListener uses a dedicated listener.
-                  Defaults to Service. TCPListener checks are not implemented yet.
+                  Defaults to Service.
                 enum:
                 - Service
                 - TCPListener
                 - Both
                 type: string
+              tcpListenerPort:
+                default: 19100
+                description: |-
+                  TCPListenerPort is the host port used by the dedicated TCP listeners.
+                  Defaults to 19100. It must be free on every node.
+                format: int32
+                maximum: 65535
+                minimum: 1024
+                type: integer
+                x-kubernetes-validations:
+                - message: port 10250 is reserved for the kubelet service
+                  rule: self != 10250
             type: object
           status:
             description: NodeNetworkCheckOperatorConfigStatus defines the observed

@@ -9,7 +9,8 @@ metadata:
     app.kubernetes.io/created-by: node-network-check-operator
   name: nodenetworkcheckoperatorconfig-sample
 spec:
-  # Options: Service, TCPListener, Both. TCPListener checks are not implemented yet.
+  # Options: Service, TCPListener, Both.
   networkDetectionMode: Service
+  tcpListenerPort: 19100
   networkCheckIntervalSeconds: 5
   consecutiveFailuresThreshold: 3

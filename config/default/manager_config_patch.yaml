@@ -8,3 +8,16 @@ spec:
     spec:
       containers:
       - name: manager
+        env:
+        - name: NNCO_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NNCO_MONITOR_SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
+        - name: NNCO_WORKLOAD_IMAGE
+          value: controller:latest
+        - name: NNCO_LISTENER_SERVICE_ACCOUNT
+          value: tcp-listener

@@ -36,13 +36,16 @@ type NodeNetworkCheckOperatorConfigReconciler struct {
 	client.Client
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
+	Workloads *WorkloadSettings
 
-	serviceChecks   map[string]*serviceCheckState
-	activeConfig    types.UID
-	loggedConfigs   map[types.NamespacedName]configVersion
-	inactiveConfigs map[types.NamespacedName]types.UID
-	probeService    serviceProbeFunc
-	now             func() time.Time
+	serviceChecks     map[string]*serviceCheckState
+	activeConfig      configVersion
+	loggedConfigs     map[types.NamespacedName]configVersion
+	inactiveConfigs   map[types.NamespacedName]types.UID
+	probeService      serviceProbeFunc
+	now               func() time.Time
+	monitor           MonitorKind
+	listenerNamespace string
 }
 
 //+kubebuilder:rbac:groups=node-network-check-operator.medik8s.io,resources=nodenetworkcheckoperatorconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -50,6 +53,8 @@ type NodeNetworkCheckOperatorConfigReconciler struct {
 //+kubebuilder:rbac:groups=node-network-check-operator.medik8s.io,resources=nodenetworkcheckoperatorconfigs/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=nodes/status,verbs=update
+//+kubebuilder:rbac:groups="",resources=pods,verbs=list
+//+kubebuilder:rbac:groups=apps,resources=daemonsets;deployments,verbs=get;create;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -81,18 +86,19 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) Reconcile(ctx context.Context
 	if previous, ok := r.loggedConfigs[req.NamespacedName]; !ok || previous != version {
 		logger.Info("Reconciling configuration",
 			"networkDetectionMode", config.Spec.NetworkDetectionMode,
+			"tcpListenerPort", config.Spec.TCPListenerPort,
 			"networkCheckIntervalSeconds", config.Spec.NetworkCheckIntervalSeconds,
 			"consecutiveFailuresThreshold", config.Spec.ConsecutiveFailuresThreshold,
 		)
 		r.loggedConfigs[req.NamespacedName] = version
 	}
 
-	return r.reconcileServiceChecks(ctx, config)
+	return r.reconcileNetworkChecks(ctx, config)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NodeNetworkCheckOperatorConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.Add(&serviceConditionCleaner{reconciler: r}); err != nil {
+	if err := mgr.Add(&staleChecksCleaner{reconciler: r}); err != nil {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).

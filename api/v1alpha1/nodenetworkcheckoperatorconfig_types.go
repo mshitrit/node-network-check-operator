@@ -40,6 +40,9 @@ const (
 // be reached after the configured number of consecutive checks.
 const NodeConditionServiceUnhealthy corev1.NodeConditionType = "NNCOServiceUnhealthy"
 
+// NodeConditionTCPListenerUnhealthy reports consecutive failures to reach the listener.
+const NodeConditionTCPListenerUnhealthy corev1.NodeConditionType = "NNCOTCPListenerUnhealthy"
+
 // NodeNetworkCheckOperatorConfigSpec defines the desired state of NodeNetworkCheckOperatorConfig
 type NodeNetworkCheckOperatorConfigSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
@@ -50,11 +53,20 @@ type NodeNetworkCheckOperatorConfigSpec struct {
 
 	// NetworkDetectionMode selects Service, TCPListener, or Both. Service uses an
 	// existing service such as the kubelet; TCPListener uses a dedicated listener.
-	// Defaults to Service. TCPListener checks are not implemented yet.
+	// Defaults to Service.
 	// +kubebuilder:validation:Enum=Service;TCPListener;Both
 	// +kubebuilder:default=Service
 	// +optional
 	NetworkDetectionMode *NetworkDetectionMode `json:"networkDetectionMode,omitempty"`
+
+	// TCPListenerPort is the host port used by the dedicated TCP listeners.
+	// Defaults to 19100. It must be free on every node.
+	// +kubebuilder:validation:Minimum=1024
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:validation:XValidation:rule="self != 10250",message="port 10250 is reserved for the kubelet service"
+	// +kubebuilder:default=19100
+	// +optional
+	TCPListenerPort *int32 `json:"tcpListenerPort,omitempty"`
 
 	// NetworkCheckIntervalSeconds is the time in seconds between network checks.
 	// Defaults to 5 seconds.

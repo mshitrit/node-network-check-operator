@@ -23,6 +23,7 @@ import (
 	"net"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +41,8 @@ import (
 )
 
 const (
-	kubeletPort          = "10250"
+	kubeletPort          = 10250
+	defaultListenerPort  = 19100
 	serviceProbeTimeout  = 2 * time.Second
 	maxConcurrentProbes  = 32
 	defaultCheckInterval = 5 * time.Second
@@ -59,11 +61,12 @@ type configVersion struct {
 }
 
 type serviceCheckState struct {
-	uid       types.UID
-	lastCheck time.Time
-	failures  int32
-	reported  bool
-	addresses string
+	uid           types.UID
+	lastCheck     time.Time
+	failures      int32
+	reported      bool
+	addresses     string
+	listenerReady bool
 }
 
 // serviceProbeFunc checks a single IP address. It returns nil when the kubelet
@@ -71,21 +74,22 @@ type serviceCheckState struct {
 type serviceProbeFunc func(context.Context, string) error
 
 type serviceSettings struct {
-	interval  time.Duration
-	threshold int32
-	mode      networkv1alpha1.NetworkDetectionMode
+	interval     time.Duration
+	threshold    int32
+	mode         networkv1alpha1.NetworkDetectionMode
+	listenerPort int32
 }
 
-// serviceConditionCleaner handles configurations deleted while the operator
+// staleChecksCleaner handles configurations deleted while the operator
 // was stopped, when no config event is available to trigger reconciliation.
-type serviceConditionCleaner struct {
+type staleChecksCleaner struct {
 	reconciler *NodeNetworkCheckOperatorConfigReconciler
 }
 
-func (*serviceConditionCleaner) NeedLeaderElection() bool { return true }
+func (*staleChecksCleaner) NeedLeaderElection() bool { return true }
 
-func (c *serviceConditionCleaner) Start(ctx context.Context) error {
-	logger := ctrl.Log.WithName("service-condition-cleaner")
+func (c *staleChecksCleaner) Start(ctx context.Context) error {
+	logger := ctrl.Log.WithName("stale-checks-cleaner")
 	for {
 		active, _, err := activeConfiguration(ctx, c.reconciler.reader())
 		if err == nil && active != nil {
@@ -93,8 +97,8 @@ func (c *serviceConditionCleaner) Start(ctx context.Context) error {
 		}
 		if err == nil {
 			var result ctrl.Result
-			result, err = c.reconciler.clearServiceConditions(ctx, nil)
-			if err == nil && !result.Requeue {
+			result, err = c.reconciler.cleanNetworkChecks(ctx, nil, nil)
+			if err == nil && result.IsZero() {
 				return nil
 			}
 		}
@@ -102,7 +106,7 @@ func (c *serviceConditionCleaner) Start(ctx context.Context) error {
 			return nil
 		}
 		if err != nil {
-			logger.Error(err, "Failed to clean up stale network service conditions")
+			logger.Error(err, "Failed to clean up stale network checks")
 		}
 		timer := time.NewTimer(defaultCheckInterval)
 		select {
@@ -116,9 +120,10 @@ func (c *serviceConditionCleaner) Start(ctx context.Context) error {
 
 func settingsFor(config *networkv1alpha1.NodeNetworkCheckOperatorConfig) (serviceSettings, error) {
 	settings := serviceSettings{
-		interval:  defaultCheckInterval,
-		threshold: defaultFailureLimit,
-		mode:      networkv1alpha1.NetworkDetectionModeService,
+		interval:     defaultCheckInterval,
+		threshold:    defaultFailureLimit,
+		mode:         networkv1alpha1.NetworkDetectionModeService,
+		listenerPort: defaultListenerPort,
 	}
 	if config.Spec.NetworkCheckIntervalSeconds != nil {
 		settings.interval = time.Duration(*config.Spec.NetworkCheckIntervalSeconds) * time.Second
@@ -128,6 +133,12 @@ func settingsFor(config *networkv1alpha1.NodeNetworkCheckOperatorConfig) (servic
 	}
 	if config.Spec.NetworkDetectionMode != nil {
 		settings.mode = *config.Spec.NetworkDetectionMode
+	}
+	if config.Spec.TCPListenerPort != nil {
+		settings.listenerPort = *config.Spec.TCPListenerPort
+	}
+	if !validListenerPort(int(settings.listenerPort)) {
+		return settings, fmt.Errorf("invalid TCP listener port %d", settings.listenerPort)
 	}
 	if settings.interval <= 0 || settings.threshold < 1 {
 		return settings, fmt.Errorf("network check interval and failure threshold must be positive")
@@ -199,12 +210,12 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) reconcileDeletedConfig(ctx co
 	if active != nil {
 		return ctrl.Result{}, nil
 	}
-	r.activeConfig = ""
+	r.activeConfig = configVersion{}
 	r.serviceChecks = nil
-	return r.clearServiceConditions(ctx, nil)
+	return r.cleanNetworkChecks(ctx, nil, nil)
 }
 
-func (r *NodeNetworkCheckOperatorConfigReconciler) reconcileServiceChecks(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig) (ctrl.Result, error) {
+func (r *NodeNetworkCheckOperatorConfigReconciler) reconcileNetworkChecks(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	settings, err := settingsFor(config)
 	if err != nil {
@@ -235,18 +246,27 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) reconcileServiceChecks(ctx co
 	if count > 1 {
 		logger.V(1).Info("Using the oldest network check configuration", "activeConfig", client.ObjectKeyFromObject(active), "configCount", count)
 	}
-	if r.activeConfig != config.UID || r.serviceChecks == nil {
-		r.activeConfig = config.UID
+	if r.Workloads != nil {
+		return r.reconcileWorkloads(ctx, config, settings)
+	}
+	// When run locally without a workload image, retain the in-process service
+	// monitor. Deployed operators run the checks in dedicated monitor pods.
+	if r.activeConfig.uid != config.UID || r.serviceChecks == nil {
+		r.activeConfig = configVersion{uid: config.UID, generation: config.Generation}
 		r.serviceChecks = make(map[string]*serviceCheckState)
 	}
 	if settings.mode == networkv1alpha1.NetworkDetectionModeTCPListener {
 		r.serviceChecks = nil
 		return r.clearServiceConditions(ctx, config)
 	}
-	return r.checkNodeServices(ctx, config, settings)
+	return r.checkNodes(ctx, config, settings)
 }
 
 func (r *NodeNetworkCheckOperatorConfigReconciler) clearServiceConditions(ctx context.Context, expected *networkv1alpha1.NodeNetworkCheckOperatorConfig) (ctrl.Result, error) {
+	return r.clearMonitorConditions(ctx, expected, ServiceMonitor)
+}
+
+func (r *NodeNetworkCheckOperatorConfigReconciler) clearMonitorConditions(ctx context.Context, expected *networkv1alpha1.NodeNetworkCheckOperatorConfig, monitor MonitorKind) (ctrl.Result, error) {
 	nodes := &corev1.NodeList{}
 	if err := r.reader().List(ctx, nodes); err != nil {
 		return ctrl.Result{}, err
@@ -254,7 +274,7 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) clearServiceConditions(ctx co
 	var failures []error
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
-		if serviceCondition(node) == nil {
+		if nodeCondition(node, monitor.condition()) == nil {
 			continue
 		}
 		matches, err := r.configurationMatches(ctx, expected)
@@ -264,7 +284,7 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) clearServiceConditions(ctx co
 		if !matches {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		if err := r.updateServiceCondition(ctx, node, false, 0, expected, false); err != nil {
+		if err := r.updateMonitorCondition(ctx, node, monitor, false, 0, expected, false); err != nil {
 			if errors.Is(err, errConfigurationChanged) {
 				return ctrl.Result{Requeue: true}, nil
 			}
@@ -280,12 +300,24 @@ type serviceCheckResult struct {
 	err       error
 }
 
-func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodeServices(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, settings serviceSettings) (ctrl.Result, error) {
+func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodes(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, settings serviceSettings) (ctrl.Result, error) {
 	nodes := &corev1.NodeList{}
 	if err := r.List(ctx, nodes); err != nil {
 		return ctrl.Result{}, err
 	}
 	now := r.clock()
+	monitor := r.monitor
+	if monitor == "" {
+		monitor = ServiceMonitor
+	}
+	var listenersReady map[string]bool
+	if monitor == HandshakeMonitor {
+		var err error
+		listenersReady, err = r.readyListeners(ctx, config)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	seen := make(map[string]bool, len(nodes.Items))
 	var due []corev1.Node
 	for _, node := range nodes.Items {
@@ -299,6 +331,12 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodeServices(ctx context
 			state.addresses = addresses
 			state.failures = 0
 			state.lastCheck = time.Time{}
+		}
+		if monitor == HandshakeMonitor && !state.listenerReady {
+			state.listenerReady = listenersReady[node.Name]
+			if !state.listenerReady {
+				continue
+			}
 		}
 		if state.lastCheck.IsZero() || !now.Before(state.lastCheck.Add(settings.interval)) {
 			due = append(due, node)
@@ -324,7 +362,13 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodeServices(ctx context
 				return
 			}
 			started := r.clock()
-			results <- serviceCheckResult{node: node, startedAt: started, err: r.checkKubelet(ctx, &node)}
+			probe := r.probeService
+			if probe == nil && monitor == HandshakeMonitor {
+				probe = func(ctx context.Context, address string) error {
+					return probeTCP(ctx, address, int(settings.listenerPort))
+				}
+			}
+			results <- serviceCheckResult{node: node, startedAt: started, err: checkNodeAddresses(ctx, &node, probe)}
 		}(node)
 	}
 	workers.Wait()
@@ -360,9 +404,10 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodeServices(ctx context
 			if state.failures < settings.threshold {
 				state.failures++
 			}
-			logger.V(1).Info("Kubelet service check failed", "node", result.node.Name, "failures", state.failures, "error", result.err)
-			if state.failures >= settings.threshold && !serviceConditionTrue(&result.node) {
-				if err := r.updateServiceCondition(ctx, &result.node, true, settings.threshold, config, true); err != nil {
+			logger.V(1).Info(monitor.endpoint()+" check failed", "node", result.node.Name, "failures", state.failures, "error", result.err)
+			condition := nodeCondition(&result.node, monitor.condition())
+			if state.failures >= settings.threshold && (condition == nil || condition.Status != corev1.ConditionTrue) {
+				if err := r.updateMonitorCondition(ctx, &result.node, monitor, true, settings.threshold, config, true); err != nil {
 					if errors.Is(err, errConfigurationChanged) {
 						return ctrl.Result{Requeue: true}, nil
 					}
@@ -374,8 +419,8 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodeServices(ctx context
 			continue
 		}
 		state.failures = 0
-		if state.reported || serviceCondition(&result.node) != nil {
-			if err := r.updateServiceCondition(ctx, &result.node, false, 0, config, true); err != nil {
+		if state.reported || nodeCondition(&result.node, monitor.condition()) != nil {
+			if err := r.updateMonitorCondition(ctx, &result.node, monitor, false, 0, config, true); err != nil {
 				if errors.Is(err, errConfigurationChanged) {
 					return ctrl.Result{Requeue: true}, nil
 				}
@@ -392,6 +437,9 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodeServices(ctx context
 	next := settings.interval
 	now = r.clock()
 	for _, state := range r.serviceChecks {
+		if state.lastCheck.IsZero() {
+			continue
+		}
 		remaining := state.lastCheck.Add(settings.interval).Sub(now)
 		if remaining < next {
 			next = remaining
@@ -429,12 +477,11 @@ func nodeAddresses(node *corev1.Node) []string {
 	return external
 }
 
-func (r *NodeNetworkCheckOperatorConfigReconciler) checkKubelet(ctx context.Context, node *corev1.Node) error {
+func checkNodeAddresses(ctx context.Context, node *corev1.Node, probe serviceProbeFunc) error {
 	addresses := nodeAddresses(node)
 	if len(addresses) == 0 {
 		return errNoNodeAddress
 	}
-	probe := r.probeService
 	if probe == nil {
 		probe = probeKubeletService
 	}
@@ -453,8 +500,12 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) checkKubelet(ctx context.Cont
 }
 
 func probeKubeletService(ctx context.Context, address string) error {
+	return probeTCP(ctx, address, kubeletPort)
+}
+
+func probeTCP(ctx context.Context, address string, port int) error {
 	dialer := net.Dialer{Timeout: serviceProbeTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(address, kubeletPort))
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(address, strconv.Itoa(port)))
 	if err != nil {
 		return err
 	}
@@ -462,21 +513,16 @@ func probeKubeletService(ctx context.Context, address string) error {
 	return nil
 }
 
-func serviceCondition(node *corev1.Node) *corev1.NodeCondition {
+func nodeCondition(node *corev1.Node, conditionType corev1.NodeConditionType) *corev1.NodeCondition {
 	for i := range node.Status.Conditions {
-		if node.Status.Conditions[i].Type == networkv1alpha1.NodeConditionServiceUnhealthy {
+		if node.Status.Conditions[i].Type == conditionType {
 			return &node.Status.Conditions[i]
 		}
 	}
 	return nil
 }
 
-func serviceConditionTrue(node *corev1.Node) bool {
-	condition := serviceCondition(node)
-	return condition != nil && condition.Status == corev1.ConditionTrue
-}
-
-func (r *NodeNetworkCheckOperatorConfigReconciler) updateServiceCondition(ctx context.Context, sampledNode *corev1.Node, unhealthy bool, threshold int32, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, verifyAddress bool) error {
+func (r *NodeNetworkCheckOperatorConfigReconciler) updateMonitorCondition(ctx context.Context, sampledNode *corev1.Node, monitor MonitorKind, unhealthy bool, threshold int32, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, verifyAddress bool) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		matches, err := r.configurationMatches(ctx, config)
 		if err != nil {
@@ -498,17 +544,17 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) updateServiceCondition(ctx co
 		if verifyAddress && !slices.Equal(nodeAddresses(node), nodeAddresses(sampledNode)) {
 			return nil
 		}
-		condition := serviceCondition(node)
+		condition := nodeCondition(node, monitor.condition())
 		if unhealthy {
 			if condition != nil && condition.Status == corev1.ConditionTrue {
 				return nil
 			}
 			now := metav1.NewTime(r.clock())
 			updated := corev1.NodeCondition{
-				Type:               networkv1alpha1.NodeConditionServiceUnhealthy,
+				Type:               monitor.condition(),
 				Status:             corev1.ConditionTrue,
-				Reason:             serviceFailureReason,
-				Message:            fmt.Sprintf("Kubelet service was unreachable for %d consecutive network checks", threshold),
+				Reason:             monitor.failureReason(),
+				Message:            fmt.Sprintf("%s was unreachable for %d consecutive network checks", monitor.endpoint(), threshold),
 				LastHeartbeatTime:  now,
 				LastTransitionTime: now,
 			}
@@ -523,16 +569,16 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) updateServiceCondition(ctx co
 			}
 			conditions := make([]corev1.NodeCondition, 0, len(node.Status.Conditions)-1)
 			for _, existing := range node.Status.Conditions {
-				if existing.Type != networkv1alpha1.NodeConditionServiceUnhealthy {
+				if existing.Type != monitor.condition() {
 					conditions = append(conditions, existing)
 				}
 			}
 			node.Status.Conditions = conditions
 		}
 		if err := r.Status().Update(ctx, node); err != nil {
-			return fmt.Errorf("update network service condition for node %s: %w", node.Name, err)
+			return fmt.Errorf("update %s condition for node %s: %w", monitor, node.Name, err)
 		}
-		log.FromContext(ctx).Info("Updated network service condition", "node", node.Name, "unhealthy", unhealthy)
+		log.FromContext(ctx).Info("Updated network check condition", "node", node.Name, "condition", monitor.condition(), "unhealthy", unhealthy)
 		return nil
 	})
 }

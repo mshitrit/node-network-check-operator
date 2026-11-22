@@ -19,6 +19,21 @@ rules:
   verbs:
   - update
 - apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - list
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
   - node-network-check-operator.medik8s.io
   resources:
   - nodenetworkcheckoperatorconfigs

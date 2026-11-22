@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -340,7 +341,7 @@ var _ = Describe("Kubelet service checks", func() {
 		createNode(nodeA, addressA)
 		wrapped := &conflictOnceClient{Client: k8sClient}
 		reconciler.Client = wrapped
-		Expect(reconciler.updateServiceCondition(ctx, getNode(nodeA), true, 3, config, true)).To(Succeed())
+		Expect(reconciler.updateMonitorCondition(ctx, getNode(nodeA), ServiceMonitor, true, 3, config, true)).To(Succeed())
 		updated := getNode(nodeA)
 		Expect(serviceConditionTrue(updated)).To(BeTrue())
 		Expect(updated.Status.Conditions).To(ContainElement(corev1.NodeCondition{
@@ -465,12 +466,12 @@ var _ = Describe("Kubelet TCP probe", func() {
 			}
 			return errors.New("unreachable")
 		}}
-		Expect(r.checkKubelet(context.Background(), node)).To(Succeed())
+		Expect(checkNodeAddresses(context.Background(), node, r.probeService)).To(Succeed())
 		Expect(attempted).To(Equal([]string{"192.0.2.1", "2001:db8::1"}))
 	})
 
 	It("opens a TCP connection to the kubelet port", func() {
-		listener, err := net.Listen("tcp", "127.0.0.1:"+kubeletPort)
+		listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(kubeletPort))
 		if err != nil {
 			Skip("kubelet port is already in use")
 		}
@@ -478,3 +479,12 @@ var _ = Describe("Kubelet TCP probe", func() {
 		Expect(probeKubeletService(context.Background(), "127.0.0.1")).To(Succeed())
 	})
 })
+
+func serviceCondition(node *corev1.Node) *corev1.NodeCondition {
+	return nodeCondition(node, networkv1alpha1.NodeConditionServiceUnhealthy)
+}
+
+func serviceConditionTrue(node *corev1.Node) bool {
+	condition := serviceCondition(node)
+	return condition != nil && condition.Status == corev1.ConditionTrue
+}

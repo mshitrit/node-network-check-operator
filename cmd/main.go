@@ -29,7 +29,9 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -57,6 +59,11 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	agent := flag.String("agent", "", "Run tcp-listener, service-monitor, or handshake-monitor instead of the controller.")
+	listenerPort := flag.Int("listener-port", 19100, "TCP port used by the listener agent.")
+	configName := flag.String("config-name", "", "Configuration resource for a monitor agent.")
+	configNamespace := flag.String("config-namespace", "", "Namespace of the monitor configuration resource.")
+	configVersion := flag.String("config-version", "", "UID and generation of the monitor configuration.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -73,6 +80,42 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	namespace := os.Getenv("NNCO_NAMESPACE")
+	if *agent != "" {
+		ctx := log.IntoContext(ctrl.SetupSignalHandler(), ctrl.Log.WithName("agent"))
+		if *agent == "tcp-listener" {
+			if err := controller.RunTCPListener(ctx, *listenerPort); err != nil {
+				setupLog.Error(err, "TCP listener stopped")
+				os.Exit(1)
+			}
+			return
+		}
+		apiClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+		if err == nil {
+			err = controller.RunMonitor(ctx, apiClient, controller.MonitorKind(*agent),
+				client.ObjectKey{Namespace: *configNamespace, Name: *configName}, *configVersion, namespace)
+		}
+		if err != nil {
+			setupLog.Error(err, "Monitor stopped", "agent", *agent)
+			os.Exit(1)
+		}
+		return
+	}
+
+	var workloads *controller.WorkloadSettings
+	if workloadImage := os.Getenv("NNCO_WORKLOAD_IMAGE"); workloadImage != "" {
+		workloads = &controller.WorkloadSettings{
+			Namespace:              namespace,
+			Image:                  workloadImage,
+			ListenerServiceAccount: os.Getenv("NNCO_LISTENER_SERVICE_ACCOUNT"),
+			MonitorServiceAccount:  os.Getenv("NNCO_MONITOR_SERVICE_ACCOUNT"),
+		}
+		if workloads.Namespace == "" || workloads.ListenerServiceAccount == "" || workloads.MonitorServiceAccount == "" {
+			setupLog.Error(nil, "Workload namespace and service accounts must be configured")
+			os.Exit(1)
+		}
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -126,6 +169,7 @@ func main() {
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
 		Scheme:    mgr.GetScheme(),
+		Workloads: workloads,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NodeNetworkCheckOperatorConfig")
 		os.Exit(1)

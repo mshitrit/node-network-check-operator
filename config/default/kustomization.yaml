@@ -26,7 +26,35 @@ resources:
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
 #- ../prometheus
 
+replacements:
+- source:
+    kind: Deployment
+    name: controller-manager
+    fieldPath: spec.template.spec.containers.[name=manager].image
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=NNCO_WORKLOAD_IMAGE].value
+- source:
+    kind: ServiceAccount
+    name: tcp-listener
+    fieldPath: metadata.name
+  targets:
+  - select:
+      kind: Deployment
+      name: controller-manager
+    fieldPaths:
+    - spec.template.spec.containers.[name=manager].env.[name=NNCO_LISTENER_SERVICE_ACCOUNT].value
+  - select:
+      kind: RoleBinding
+      name: tcp-listener-scc
+    fieldPaths:
+    - subjects.[kind=ServiceAccount].name
+
 patches:
+- path: manager_config_patch.yaml
 # Protect the /metrics endpoint by putting it behind auth.
 # If you want your controller-manager to expose the /metrics
 # endpoint w/o any authn/z, please comment the following line.
