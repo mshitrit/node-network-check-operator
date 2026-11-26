@@ -18,8 +18,7 @@ package controller
 
 import (
 	"context"
-	"errors"
-	"time"
+	"net"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -33,8 +32,12 @@ import (
 	networkv1alpha1 "github.com/mshitrit/node-network-check-operator/api/v1alpha1"
 )
 
+var testTCPCheck = networkv1alpha1.NetworkCheck{
+	Type: networkv1alpha1.NetworkCheckTypeTCPSocket, Host: "endpoint.example.com", Port: 443,
+}
+
 var _ = Describe("Network check workloads", func() {
-	It("replaces the workloads on config changes and tears down the listeners in Service mode", func() {
+	It("replaces check workloads on config changes and removes legacy monitors", func() {
 		ctx := context.Background()
 		const namespace = "default"
 		config := &networkv1alpha1.NodeNetworkCheckOperatorConfig{
@@ -48,7 +51,7 @@ var _ = Describe("Network check workloads", func() {
 			Scheme: k8sClient.Scheme(),
 			Workloads: &WorkloadSettings{
 				Namespace: namespace, Image: "example.invalid/nnco:test",
-				ListenerServiceAccount: "listener", MonitorServiceAccount: "manager",
+				TCPMonitorServiceAccount: "tcp-agent", MonitorServiceAccount: "manager",
 			},
 		}
 		reconcile := func() ctrl.Result {
@@ -59,13 +62,24 @@ var _ = Describe("Network check workloads", func() {
 		changeConfig := func(mode networkv1alpha1.NetworkDetectionMode, port int32) {
 			Expect(k8sClient.Get(ctx, key, config)).To(Succeed())
 			config.Spec.NetworkDetectionMode = &mode
-			config.Spec.TCPListenerPort = &port
+			config.Spec.Checks = nil
+			if mode != networkv1alpha1.NetworkDetectionModeService {
+				check := testTCPCheck
+				check.Port = port
+				config.Spec.Checks = []networkv1alpha1.NetworkCheck{check}
+			}
 			Expect(k8sClient.Update(ctx, config)).To(Succeed())
 		}
 		service := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: string(ServiceMonitor), Namespace: namespace}}
-		handshake := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: string(HandshakeMonitor), Namespace: namespace}}
-		listener := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: listenerName, Namespace: namespace}}
-		for _, obj := range []client.Object{service, handshake, listener} {
+		tcpMonitor := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: string(TCPMonitor), Namespace: namespace}}
+		legacyHandshake := r.serviceMonitorDeployment(config)
+		legacyHandshake.Name = "handshake-monitor"
+		legacyListener := r.tcpMonitorDaemonSet(config)
+		legacyListener.Name = "tcp-listener"
+		for _, obj := range []client.Object{legacyHandshake, legacyListener} {
+			Expect(k8sClient.Create(ctx, obj)).To(Succeed())
+		}
+		for _, obj := range []client.Object{service, tcpMonitor, legacyHandshake, legacyListener} {
 			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, obj))).To(Succeed()) })
 		}
 		get := func(obj client.Object) error {
@@ -80,111 +94,98 @@ var _ = Describe("Network check workloads", func() {
 			Expect(apierrors.IsNotFound(get(obj))).To(BeTrue())
 		}
 
+		Expect(reconcile().RequeueAfter).To(Equal(workloadRetryDelay))
+		completeDeletion(legacyHandshake)
+		completeDeletion(legacyListener)
 		reconcile()
 		Expect(get(service)).To(Succeed())
-		Expect(apierrors.IsNotFound(get(handshake))).To(BeTrue())
-		Expect(apierrors.IsNotFound(get(listener))).To(BeTrue())
+		Expect(apierrors.IsNotFound(get(tcpMonitor))).To(BeTrue())
 
-		changeConfig(networkv1alpha1.NetworkDetectionModeTCPListener, defaultListenerPort)
+		changeConfig(networkv1alpha1.NetworkDetectionModeTCPListener, 443)
 		Expect(reconcile().RequeueAfter).To(Equal(workloadRetryDelay))
-		Expect(apierrors.IsNotFound(get(listener))).To(BeTrue())
+		Expect(apierrors.IsNotFound(get(tcpMonitor))).To(BeTrue())
 		completeDeletion(service)
 		reconcile()
-		Expect(get(listener)).To(Succeed())
-		Expect(get(handshake)).To(Succeed())
+		Expect(get(tcpMonitor)).To(Succeed())
 		Expect(apierrors.IsNotFound(get(service))).To(BeTrue())
-		Expect(listener.Spec.Template.Spec.HostNetwork).To(BeTrue())
-		Expect(listener.Spec.Template.Spec.Containers[0].Ports[0].HostPort).To(Equal(int32(defaultListenerPort)))
+		pod := tcpMonitor.Spec.Template.Spec
+		Expect(pod.HostNetwork).To(BeTrue())
+		Expect(pod.ServiceAccountName).To(Equal("tcp-agent"))
+		Expect(pod.Containers[0].Args).To(ContainElement("--agent=tcp-monitor"))
+		Expect(pod.Containers[0].Env[0].ValueFrom.FieldRef.FieldPath).To(Equal("spec.nodeName"))
+		Expect(pod.Containers[0].Ports).To(BeEmpty())
+		previousTCPMonitor := tcpMonitor.UID
 
-		changeConfig(networkv1alpha1.NetworkDetectionModeBoth, 19101)
+		changeConfig(networkv1alpha1.NetworkDetectionModeBoth, 8443)
 		Expect(reconcile().RequeueAfter).To(Equal(workloadRetryDelay))
-		completeDeletion(listener)
-		completeDeletion(handshake)
+		completeDeletion(tcpMonitor)
 		reconcile()
-		Expect(get(listener)).To(Succeed())
-		Expect(get(handshake)).To(Succeed())
+		Expect(get(tcpMonitor)).To(Succeed())
+		Expect(tcpMonitor.UID).NotTo(Equal(previousTCPMonitor))
+		Expect(tcpMonitor.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--config-version=" + workloadVersion(config)))
 		Expect(get(service)).To(Succeed())
-		Expect(listener.Spec.Template.Spec.Containers[0].Ports[0].HostPort).To(Equal(int32(19101)))
 		previousService := service.UID
 
-		changeConfig(networkv1alpha1.NetworkDetectionModeService, 19101)
+		changeConfig(networkv1alpha1.NetworkDetectionModeService, 0)
 		Expect(reconcile().RequeueAfter).To(Equal(workloadRetryDelay))
-		completeDeletion(listener)
-		completeDeletion(handshake)
+		completeDeletion(tcpMonitor)
 		completeDeletion(service)
 		reconcile()
 		Expect(get(service)).To(Succeed())
 		Expect(service.UID).NotTo(Equal(previousService))
-		Expect(apierrors.IsNotFound(get(handshake))).To(BeTrue())
-		Expect(apierrors.IsNotFound(get(listener))).To(BeTrue())
+		Expect(apierrors.IsNotFound(get(tcpMonitor))).To(BeTrue())
 	})
 
-	It("reports listener failures after readiness and preserves the service condition on recovery", func() {
+	It("marks only its node after consecutive TCP failures and clears the condition on recovery", func() {
 		ctx := context.Background()
 		mode := networkv1alpha1.NetworkDetectionModeBoth
 		threshold := int32(2)
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		Expect(err).NotTo(HaveOccurred())
+		addr := listener.Addr().(*net.TCPAddr)
+		Expect(listener.Close()).To(Succeed())
 		config := &networkv1alpha1.NodeNetworkCheckOperatorConfig{
-			ObjectMeta: metav1.ObjectMeta{Name: "handshake-test", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "tcp-monitor-test", Namespace: "default"},
 			Spec: networkv1alpha1.NodeNetworkCheckOperatorConfigSpec{
 				NetworkDetectionMode: &mode, ConsecutiveFailuresThreshold: &threshold,
+				Checks: []networkv1alpha1.NetworkCheck{{
+					Type: networkv1alpha1.NetworkCheckTypeTCPSocket, Host: addr.IP.String(), Port: int32(addr.Port),
+				}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, config)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, config)).To(Succeed()) })
-		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "handshake-test-node"}}
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "tcp-monitor-test-node"}}
 		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, node)).To(Succeed()) })
-		node.Status.Addresses = []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "192.0.2.1"}}
 		node.Status.Conditions = []corev1.NodeCondition{{Type: ServiceMonitor.condition(), Status: corev1.ConditionTrue}}
 		Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
+		otherNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "other-tcp-monitor-test-node"}}
+		Expect(k8sClient.Create(ctx, otherNode)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, otherNode)).To(Succeed()) })
 
-		now := time.Now()
-		reachable := false
-		attempts := 0
-		r := &NodeNetworkCheckOperatorConfigReconciler{
-			Client: k8sClient, monitor: HandshakeMonitor, listenerNamespace: "default",
-			serviceChecks: make(map[string]*serviceCheckState),
-			now:           func() time.Time { return now },
-			probeService: func(context.Context, string) error {
-				attempts++
-				if !reachable {
-					return errors.New("listener unreachable")
-				}
-				return nil
-			},
-		}
+		r := &NodeNetworkCheckOperatorConfigReconciler{Client: k8sClient}
 		settings, err := settingsFor(config)
 		Expect(err).NotTo(HaveOccurred())
+		var failures int32
 		check := func() *corev1.NodeCondition {
-			_, err := r.checkNodes(ctx, config, settings)
-			Expect(err).NotTo(HaveOccurred())
-			now = now.Add(settings.interval)
+			Expect(r.checkLocalTCP(ctx, config, settings, node.Name, &failures)).To(Succeed())
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(node), node)).To(Succeed())
-			return nodeCondition(node, HandshakeMonitor.condition())
+			return nodeCondition(node, TCPMonitor.condition())
 		}
-		Expect(check()).To(BeNil())
-		Expect(attempts).To(BeZero())
-
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "handshake-test-listener", Namespace: "default",
-				Labels: workloadLabels(listenerName), Annotations: map[string]string{configVersionKey: workloadVersion(config)},
-			},
-			Spec: corev1.PodSpec{NodeName: node.Name, Containers: []corev1.Container{{Name: "listener", Image: "ignored"}}},
-		}
-		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
-		DeferCleanup(func() {
-			grace := int64(0)
-			Expect(k8sClient.Delete(ctx, pod, &client.DeleteOptions{GracePeriodSeconds: &grace})).To(Succeed())
-		})
-		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 		Expect(check()).To(BeNil())
 		condition := check()
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(corev1.ConditionTrue))
-		reachable = true
+		Expect(condition.Reason).To(Equal("TCPEndpointUnreachable"))
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(otherNode), otherNode)).To(Succeed())
+		Expect(nodeCondition(otherNode, TCPMonitor.condition())).To(BeNil())
+
+		listener, err = net.ListenTCP("tcp4", addr)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(listener.Close)
 		Expect(check()).To(BeNil())
+		Expect(failures).To(BeZero())
 		Expect(serviceConditionTrue(node)).To(BeTrue())
 	})
 })

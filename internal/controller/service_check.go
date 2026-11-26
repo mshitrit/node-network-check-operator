@@ -42,7 +42,6 @@ import (
 
 const (
 	kubeletPort          = 10250
-	defaultListenerPort  = 19100
 	serviceProbeTimeout  = 2 * time.Second
 	maxConcurrentProbes  = 32
 	defaultCheckInterval = 5 * time.Second
@@ -61,23 +60,22 @@ type configVersion struct {
 }
 
 type serviceCheckState struct {
-	uid           types.UID
-	lastCheck     time.Time
-	failures      int32
-	reported      bool
-	addresses     string
-	listenerReady bool
+	uid       types.UID
+	lastCheck time.Time
+	failures  int32
+	reported  bool
+	addresses string
 }
 
 // serviceProbeFunc checks a single IP address. It returns nil when the kubelet
 // TCP port is reachable.
 type serviceProbeFunc func(context.Context, string) error
 
-type serviceSettings struct {
-	interval     time.Duration
-	threshold    int32
-	mode         networkv1alpha1.NetworkDetectionMode
-	listenerPort int32
+type networkCheckSettings struct {
+	interval  time.Duration
+	threshold int32
+	mode      networkv1alpha1.NetworkDetectionMode
+	tcpCheck  *networkv1alpha1.NetworkCheck
 }
 
 // staleChecksCleaner handles configurations deleted while the operator
@@ -118,12 +116,11 @@ func (c *staleChecksCleaner) Start(ctx context.Context) error {
 	}
 }
 
-func settingsFor(config *networkv1alpha1.NodeNetworkCheckOperatorConfig) (serviceSettings, error) {
-	settings := serviceSettings{
-		interval:     defaultCheckInterval,
-		threshold:    defaultFailureLimit,
-		mode:         networkv1alpha1.NetworkDetectionModeService,
-		listenerPort: defaultListenerPort,
+func settingsFor(config *networkv1alpha1.NodeNetworkCheckOperatorConfig) (networkCheckSettings, error) {
+	settings := networkCheckSettings{
+		interval:  defaultCheckInterval,
+		threshold: defaultFailureLimit,
+		mode:      networkv1alpha1.NetworkDetectionModeService,
 	}
 	if config.Spec.NetworkCheckIntervalSeconds != nil {
 		settings.interval = time.Duration(*config.Spec.NetworkCheckIntervalSeconds) * time.Second
@@ -134,11 +131,8 @@ func settingsFor(config *networkv1alpha1.NodeNetworkCheckOperatorConfig) (servic
 	if config.Spec.NetworkDetectionMode != nil {
 		settings.mode = *config.Spec.NetworkDetectionMode
 	}
-	if config.Spec.TCPListenerPort != nil {
-		settings.listenerPort = *config.Spec.TCPListenerPort
-	}
-	if !validListenerPort(int(settings.listenerPort)) {
-		return settings, fmt.Errorf("invalid TCP listener port %d", settings.listenerPort)
+	if len(config.Spec.Checks) == 1 {
+		settings.tcpCheck = &config.Spec.Checks[0]
 	}
 	if settings.interval <= 0 || settings.threshold < 1 {
 		return settings, fmt.Errorf("network check interval and failure threshold must be positive")
@@ -300,24 +294,13 @@ type serviceCheckResult struct {
 	err       error
 }
 
-func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodes(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, settings serviceSettings) (ctrl.Result, error) {
+func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodes(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, settings networkCheckSettings) (ctrl.Result, error) {
 	nodes := &corev1.NodeList{}
 	if err := r.List(ctx, nodes); err != nil {
 		return ctrl.Result{}, err
 	}
 	now := r.clock()
-	monitor := r.monitor
-	if monitor == "" {
-		monitor = ServiceMonitor
-	}
-	var listenersReady map[string]bool
-	if monitor == HandshakeMonitor {
-		var err error
-		listenersReady, err = r.readyListeners(ctx, config)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-	}
+	const monitor = ServiceMonitor
 	seen := make(map[string]bool, len(nodes.Items))
 	var due []corev1.Node
 	for _, node := range nodes.Items {
@@ -331,12 +314,6 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodes(ctx context.Contex
 			state.addresses = addresses
 			state.failures = 0
 			state.lastCheck = time.Time{}
-		}
-		if monitor == HandshakeMonitor && !state.listenerReady {
-			state.listenerReady = listenersReady[node.Name]
-			if !state.listenerReady {
-				continue
-			}
 		}
 		if state.lastCheck.IsZero() || !now.Before(state.lastCheck.Add(settings.interval)) {
 			due = append(due, node)
@@ -362,13 +339,7 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) checkNodes(ctx context.Contex
 				return
 			}
 			started := r.clock()
-			probe := r.probeService
-			if probe == nil && monitor == HandshakeMonitor {
-				probe = func(ctx context.Context, address string) error {
-					return probeTCP(ctx, address, int(settings.listenerPort))
-				}
-			}
-			results <- serviceCheckResult{node: node, startedAt: started, err: checkNodeAddresses(ctx, &node, probe)}
+			results <- serviceCheckResult{node: node, startedAt: started, err: checkNodeAddresses(ctx, &node, r.probeService)}
 		}(node)
 	}
 	workers.Wait()
@@ -500,11 +471,11 @@ func checkNodeAddresses(ctx context.Context, node *corev1.Node, probe servicePro
 }
 
 func probeKubeletService(ctx context.Context, address string) error {
-	return probeTCP(ctx, address, kubeletPort)
+	return probeTCP(ctx, address, kubeletPort, serviceProbeTimeout)
 }
 
-func probeTCP(ctx context.Context, address string, port int) error {
-	dialer := net.Dialer{Timeout: serviceProbeTimeout}
+func probeTCP(ctx context.Context, address string, port int, timeout time.Duration) error {
+	dialer := net.Dialer{Timeout: timeout}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(address, strconv.Itoa(port)))
 	if err != nil {
 		return err

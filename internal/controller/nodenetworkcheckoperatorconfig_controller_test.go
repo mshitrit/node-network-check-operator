@@ -119,6 +119,7 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			} {
 				Expect(k8sClient.Get(ctx, typeNamespacedName, config)).To(Succeed())
 				config.Spec.NetworkDetectionMode = &mode
+				config.Spec.Checks = []nodenetworkcheckoperatorv1alpha1.NetworkCheck{testTCPCheck}
 				config.Spec.NetworkCheckIntervalSeconds = &interval
 				config.Spec.ConsecutiveFailuresThreshold = &threshold
 				Expect(k8sClient.Update(ctx, config)).To(Succeed())
@@ -159,19 +160,34 @@ var _ = Describe("NodeNetworkCheckOperatorConfig Controller", func() {
 			Expect(found).To(BeTrue())
 			Expect(threshold).To(Equal(int64(3)))
 
-			port, found, err := unstructured.NestedInt64(resource.Object, "spec", "tcpListenerPort")
+			checks, found, err := unstructured.NestedSlice(resource.Object, "spec", "checks")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(port).To(Equal(int64(19100)))
+			Expect(found).To(BeFalse())
+			Expect(checks).To(BeEmpty())
 		})
 
-		It("rejects privileged, reserved, and out-of-range listener ports", func() {
+		It("requires an explicit host and port in TCPListener and Both", func() {
 			config := &nodenetworkcheckoperatorv1alpha1.NodeNetworkCheckOperatorConfig{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, config)).To(Succeed())
-			for _, port := range []int32{1023, 10250, 65536} {
-				candidate := config.DeepCopy()
-				candidate.Spec.TCPListenerPort = &port
-				Expect(errors.IsInvalid(k8sClient.Update(ctx, candidate))).To(BeTrue())
+			for _, mode := range []nodenetworkcheckoperatorv1alpha1.NetworkDetectionMode{
+				nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeTCPListener,
+				nodenetworkcheckoperatorv1alpha1.NetworkDetectionModeBoth,
+			} {
+				config.Spec.NetworkDetectionMode = &mode
+				for _, checks := range [][]nodenetworkcheckoperatorv1alpha1.NetworkCheck{
+					nil,
+					{{Type: testTCPCheck.Type, Port: 443}},
+					{{Type: testTCPCheck.Type, Host: testTCPCheck.Host}},
+					{{Type: testTCPCheck.Type, Host: testTCPCheck.Host, Port: 65536}},
+					{testTCPCheck, testTCPCheck},
+				} {
+					candidate := config.DeepCopy()
+					candidate.Spec.Checks = checks
+					Expect(errors.IsInvalid(k8sClient.Update(ctx, candidate))).To(BeTrue())
+				}
+				config.Spec.Checks = []nodenetworkcheckoperatorv1alpha1.NetworkCheck{testTCPCheck}
+				Expect(k8sClient.Update(ctx, config)).To(Succeed())
+				config.Spec.Checks = nil
 			}
 		})
 

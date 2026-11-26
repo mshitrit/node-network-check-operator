@@ -19,5 +19,5 @@ spec:
               fieldPath: spec.serviceAccountName
         - name: NNCO_WORKLOAD_IMAGE
           value: controller:latest
-        - name: NNCO_LISTENER_SERVICE_ACCOUNT
-          value: tcp-listener
+        - name: NNCO_TCP_MONITOR_SERVICE_ACCOUNT
+          value: tcp-monitor

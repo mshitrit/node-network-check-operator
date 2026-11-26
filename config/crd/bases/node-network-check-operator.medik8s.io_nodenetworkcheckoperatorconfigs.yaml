@@ -42,6 +42,36 @@ spec:
             description: NodeNetworkCheckOperatorConfigSpec defines the desired state
               of NodeNetworkCheckOperatorConfig
             properties:
+              checks:
+                description: Checks specifies the outbound TCP check. TCPListener
+                  and Both require one entry.
+                items:
+                  description: NetworkCheck specifies an endpoint to probe from each
+                    node.
+                  properties:
+                    host:
+                      description: Host is an IPv4 or IPv6 address or a DNS name.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    port:
+                      description: Port is the TCP port on the destination host.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    type:
+                      description: Type selects the check mechanism.
+                      enum:
+                      - tcpSocket
+                      type: string
+                  required:
+                  - host
+                  - port
+                  - type
+                  type: object
+                maxItems: 1
+                type: array
               consecutiveFailuresThreshold:
                 default: 3
                 description: |-
@@ -50,10 +80,6 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
-              foo:
-                description: Foo is an example field of NodeNetworkCheckOperatorConfig.
-                  Edit nodenetworkcheckoperatorconfig_types.go to remove/update
-                type: string
               networkCheckIntervalSeconds:
                 default: 5
                 description: |-
@@ -66,26 +92,18 @@ spec:
                 default: Service
                 description: |-
                   NetworkDetectionMode selects Service, TCPListener, or Both. Service uses an
-                  existing service such as the kubelet; TCPListener uses a dedicated listener.
+                  existing service such as the kubelet. TCPListener checks a configured TCP endpoint from each node.
                   Defaults to Service.
                 enum:
                 - Service
                 - TCPListener
                 - Both
                 type: string
-              tcpListenerPort:
-                default: 19100
-                description: |-
-                  TCPListenerPort is the host port used by the dedicated TCP listeners.
-                  Defaults to 19100. It must be free on every node.
-                format: int32
-                maximum: 65535
-                minimum: 1024
-                type: integer
-                x-kubernetes-validations:
-                - message: port 10250 is reserved for the kubelet service
-                  rule: self != 10250
             type: object
+            x-kubernetes-validations:
+            - message: TCPListener and Both require one TCP endpoint in checks
+              rule: '!has(self.networkDetectionMode) || self.networkDetectionMode
+                == ''Service'' || (has(self.checks) && size(self.checks) == 1)'
           status:
             description: NodeNetworkCheckOperatorConfigStatus defines the observed
               state of NodeNetworkCheckOperatorConfig

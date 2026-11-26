@@ -39,17 +39,17 @@ replacements:
     - spec.template.spec.containers.[name=manager].env.[name=NNCO_WORKLOAD_IMAGE].value
 - source:
     kind: ServiceAccount
-    name: tcp-listener
+    name: tcp-monitor
     fieldPath: metadata.name
   targets:
   - select:
       kind: Deployment
       name: controller-manager
     fieldPaths:
-    - spec.template.spec.containers.[name=manager].env.[name=NNCO_LISTENER_SERVICE_ACCOUNT].value
+    - spec.template.spec.containers.[name=manager].env.[name=NNCO_TCP_MONITOR_SERVICE_ACCOUNT].value
   - select:
       kind: RoleBinding
-      name: tcp-listener-scc
+      name: tcp-monitor-scc
     fieldPaths:
     - subjects.[kind=ServiceAccount].name
 

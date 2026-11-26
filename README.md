@@ -63,20 +63,34 @@ configurations exist, the oldest is active. The interval and consecutive
 failure threshold default to five seconds and three failures.
 
 - `Service` starts `service-monitor`, which checks kubelet TCP port 10250.
-- `TCPListener` deploys `tcp-listener` on each Linux node and starts
-  `handshake-monitor`. Set `spec.tcpListenerPort` to change the default port
-  of 19100. The port must be available on every node.
-- `Both` runs the listener and both monitors.
+- `TCPListener` runs a `tcp-monitor` DaemonSet. Each Linux node checks a TCP
+  endpoint from that node's host network with a one-second connection timeout.
+- `Both` runs the service monitor and the TCP monitor.
+
+`TCPListener` and `Both` require one entry in `spec.checks`. Set `host` to the
+destination DNS name or IP address and `port` to its TCP port.
+
+```yaml
+spec:
+  networkDetectionMode: TCPListener
+  checks:
+  - type: tcpSocket
+    host: endpoint.example.com
+    port: 443
+```
+
+For existing `TCPListener` or `Both` configurations, replace `tcpListenerPort`
+with `checks` to enable the outbound probe after an upgrade.
 
 Changes to the active config replace the workloads and reset the failure counts.
 The monitors publish `NNCOServiceUnhealthy` and `NNCOTCPListenerUnhealthy`
 respectively, and remove their condition when a check succeeds. Disabling a
 monitor or deleting the last config clears the corresponding condition.
 
-The listener requires host networking. The OpenShift manifests grant
-`hostnetwork-v2` to the listener's dedicated service account. On other
+The TCP monitor requires host networking and API access to publish results.
+The OpenShift manifests grant `hostnetwork-v2` to its dedicated service account. On other
 Kubernetes clusters, the install namespace must allow host networking to use
-listener mode. A local `make run` without workload settings runs the service
+TCP monitoring. A local `make run` without workload settings runs the service
 check in the controller process.
 
 ### To Deploy on the cluster

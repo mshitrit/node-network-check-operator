@@ -38,14 +38,12 @@ type NodeNetworkCheckOperatorConfigReconciler struct {
 	Scheme    *runtime.Scheme
 	Workloads *WorkloadSettings
 
-	serviceChecks     map[string]*serviceCheckState
-	activeConfig      configVersion
-	loggedConfigs     map[types.NamespacedName]configVersion
-	inactiveConfigs   map[types.NamespacedName]types.UID
-	probeService      serviceProbeFunc
-	now               func() time.Time
-	monitor           MonitorKind
-	listenerNamespace string
+	serviceChecks   map[string]*serviceCheckState
+	activeConfig    configVersion
+	loggedConfigs   map[types.NamespacedName]configVersion
+	inactiveConfigs map[types.NamespacedName]types.UID
+	probeService    serviceProbeFunc
+	now             func() time.Time
 }
 
 //+kubebuilder:rbac:groups=node-network-check-operator.medik8s.io,resources=nodenetworkcheckoperatorconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -53,7 +51,6 @@ type NodeNetworkCheckOperatorConfigReconciler struct {
 //+kubebuilder:rbac:groups=node-network-check-operator.medik8s.io,resources=nodenetworkcheckoperatorconfigs/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=nodes/status,verbs=update
-//+kubebuilder:rbac:groups="",resources=pods,verbs=list
 //+kubebuilder:rbac:groups=apps,resources=daemonsets;deployments,verbs=get;create;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -86,7 +83,7 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) Reconcile(ctx context.Context
 	if previous, ok := r.loggedConfigs[req.NamespacedName]; !ok || previous != version {
 		logger.Info("Reconciling configuration",
 			"networkDetectionMode", config.Spec.NetworkDetectionMode,
-			"tcpListenerPort", config.Spec.TCPListenerPort,
+			"checks", config.Spec.Checks,
 			"networkCheckIntervalSeconds", config.Spec.NetworkCheckIntervalSeconds,
 			"consecutiveFailuresThreshold", config.Spec.ConsecutiveFailuresThreshold,
 		)

@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,16 +26,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	networkv1alpha1 "github.com/mshitrit/node-network-check-operator/api/v1alpha1"
 )
 
 const (
-	listenerName       = "tcp-listener"
 	workloadLabel      = "app.kubernetes.io/name"
 	managedByLabel     = "app.kubernetes.io/managed-by"
 	managedBy          = "node-network-check-operator"
@@ -46,10 +44,10 @@ const (
 
 // WorkloadSettings identifies the operator's namespace, image and service accounts.
 type WorkloadSettings struct {
-	Namespace              string
-	Image                  string
-	MonitorServiceAccount  string
-	ListenerServiceAccount string
+	Namespace                string
+	Image                    string
+	MonitorServiceAccount    string
+	TCPMonitorServiceAccount string
 }
 
 func workloadLabels(name string) map[string]string {
@@ -60,13 +58,20 @@ func workloadVersion(config *networkv1alpha1.NodeNetworkCheckOperatorConfig) str
 	return fmt.Sprintf("%s:%d", config.UID, config.Generation)
 }
 
-func (r *NodeNetworkCheckOperatorConfigReconciler) reconcileWorkloads(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, settings serviceSettings) (ctrl.Result, error) {
+func (r *NodeNetworkCheckOperatorConfigReconciler) reconcileWorkloads(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, settings networkCheckSettings) (ctrl.Result, error) {
 	desired := []client.Object{}
-	if HandshakeMonitor.enabled(settings.mode) {
-		desired = append(desired, r.listenerDaemonSet(settings.listenerPort), r.monitorDeployment(HandshakeMonitor, config))
+	version := configVersion{uid: config.UID, generation: config.Generation}
+	if TCPMonitor.enabled(settings.mode) {
+		if settings.tcpCheck != nil {
+			desired = append(desired, r.tcpMonitorDaemonSet(config))
+		} else if r.activeConfig != version {
+			// Configurations stored before the CRD upgrade may lack an endpoint.
+			log.FromContext(ctx).Info("TCP monitor requires one TCP endpoint in checks",
+				"config", client.ObjectKeyFromObject(config))
+		}
 	}
 	if ServiceMonitor.enabled(settings.mode) {
-		desired = append(desired, r.monitorDeployment(ServiceMonitor, config))
+		desired = append(desired, r.serviceMonitorDeployment(config))
 	}
 	for _, obj := range desired {
 		annotations := map[string]string{configVersionKey: workloadVersion(config)}
@@ -83,7 +88,7 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) reconcileWorkloads(ctx contex
 		return result, err
 	}
 
-	r.activeConfig = configVersion{uid: config.UID, generation: config.Generation}
+	r.activeConfig = version
 	// Recheck the workloads even in Service mode so a deleted workload is recreated.
 	return ctrl.Result{RequeueAfter: defaultCheckInterval}, nil
 }
@@ -106,7 +111,7 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) cleanNetworkChecks(ctx contex
 		}
 	}
 	if config == nil || r.activeConfig != (configVersion{uid: config.UID, generation: config.Generation}) {
-		for _, monitor := range []MonitorKind{ServiceMonitor, HandshakeMonitor} {
+		for _, monitor := range []MonitorKind{ServiceMonitor, TCPMonitor} {
 			if !enabled[string(monitor)] {
 				result, err := r.clearMonitorConditions(ctx, config, monitor)
 				if err != nil || !result.IsZero() {
@@ -137,8 +142,10 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) retireWorkloads(ctx context.C
 	}
 	wait := false
 	for _, obj := range []client.Object{
-		&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: listenerName, Namespace: namespace}},
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: string(HandshakeMonitor), Namespace: namespace}},
+		// Remove workloads left by installations that used inbound TCP checks.
+		&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "tcp-listener", Namespace: namespace}},
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "handshake-monitor", Namespace: namespace}},
+		&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: string(TCPMonitor), Namespace: namespace}},
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: string(ServiceMonitor), Namespace: namespace}},
 	} {
 		key := client.ObjectKeyFromObject(obj)
@@ -197,42 +204,30 @@ func workloadTemplate(obj client.Object) *corev1.PodTemplateSpec {
 	panic("unsupported workload kind")
 }
 
-func (r *NodeNetworkCheckOperatorConfigReconciler) listenerDaemonSet(port int32) *appsv1.DaemonSet {
-	template := r.workloadPod(listenerName, []string{"--agent=" + listenerName, "--listener-port=" + strconv.Itoa(int(port))})
+func (r *NodeNetworkCheckOperatorConfigReconciler) tcpMonitorDaemonSet(config *networkv1alpha1.NodeNetworkCheckOperatorConfig) *appsv1.DaemonSet {
+	name := string(TCPMonitor)
+	template := r.monitorPod(TCPMonitor, config)
 	template.Spec.HostNetwork = true
 	template.Spec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
 	template.Spec.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists}}
-	template.Spec.ServiceAccountName = r.Workloads.ListenerServiceAccount
-	token := false
-	template.Spec.AutomountServiceAccountToken = &token
-	container := &template.Spec.Containers[0]
-	container.Ports = []corev1.ContainerPort{{Name: "listener", ContainerPort: port, HostPort: port, Protocol: corev1.ProtocolTCP}}
-	container.ReadinessProbe = &corev1.Probe{
-		ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString("listener")}},
-		PeriodSeconds: 2,
-	}
+	template.Spec.ServiceAccountName = r.Workloads.TCPMonitorServiceAccount
+	template.Spec.Containers[0].Env = []corev1.EnvVar{{
+		Name:      "NNCO_NODE_NAME",
+		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}},
+	}}
 	return &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{Name: listenerName, Namespace: r.Workloads.Namespace, Labels: workloadLabels(listenerName)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Workloads.Namespace, Labels: workloadLabels(name)},
 		Spec: appsv1.DaemonSetSpec{
-			Selector: &metav1.LabelSelector{MatchLabels: workloadLabels(listenerName)},
+			Selector: &metav1.LabelSelector{MatchLabels: workloadLabels(name)},
 			Template: template,
 		},
 	}
 }
 
-func (r *NodeNetworkCheckOperatorConfigReconciler) monitorDeployment(monitor MonitorKind, config *networkv1alpha1.NodeNetworkCheckOperatorConfig) *appsv1.Deployment {
-	name := string(monitor)
-	template := r.workloadPod(name, []string{
-		"--agent=" + name,
-		"--config-name=" + config.Name,
-		"--config-namespace=" + config.Namespace,
-		"--config-version=" + workloadVersion(config),
-	})
+func (r *NodeNetworkCheckOperatorConfigReconciler) serviceMonitorDeployment(config *networkv1alpha1.NodeNetworkCheckOperatorConfig) *appsv1.Deployment {
+	name := string(ServiceMonitor)
+	template := r.monitorPod(ServiceMonitor, config)
 	template.Spec.ServiceAccountName = r.Workloads.MonitorServiceAccount
-	template.Spec.Containers[0].Env = []corev1.EnvVar{{
-		Name:      "NNCO_NAMESPACE",
-		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}},
-	}}
 	replicas := int32(1)
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Workloads.Namespace, Labels: workloadLabels(name)},
@@ -243,6 +238,16 @@ func (r *NodeNetworkCheckOperatorConfigReconciler) monitorDeployment(monitor Mon
 			Template: template,
 		},
 	}
+}
+
+func (r *NodeNetworkCheckOperatorConfigReconciler) monitorPod(monitor MonitorKind, config *networkv1alpha1.NodeNetworkCheckOperatorConfig) corev1.PodTemplateSpec {
+	name := string(monitor)
+	return r.workloadPod(name, []string{
+		"--agent=" + name,
+		"--config-name=" + config.Name,
+		"--config-namespace=" + config.Namespace,
+		"--config-version=" + workloadVersion(config),
+	})
 }
 
 func (r *NodeNetworkCheckOperatorConfigReconciler) workloadPod(name string, args []string) corev1.PodTemplateSpec {

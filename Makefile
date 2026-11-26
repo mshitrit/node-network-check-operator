@@ -264,7 +264,8 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metada
 	cp config/manager/kustomization.yaml "$$backup"; \
 	trap 'cp "$$backup" config/manager/kustomization.yaml; rm -f "$$backup"' EXIT; \
 	(cd config/manager && $(KUSTOMIZE) edit set image controller="$(IMG)"); \
-	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
+	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS) \
+		--extra-service-accounts node-network-check-operator-tcp-monitor
 	$(OPERATOR_SDK) bundle validate ./bundle
 
 .PHONY: bundle-build

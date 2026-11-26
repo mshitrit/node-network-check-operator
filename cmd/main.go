@@ -59,8 +59,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
-	agent := flag.String("agent", "", "Run tcp-listener, service-monitor, or handshake-monitor instead of the controller.")
-	listenerPort := flag.Int("listener-port", 19100, "TCP port used by the listener agent.")
+	agent := flag.String("agent", "", "Run service-monitor or tcp-monitor instead of the controller.")
 	configName := flag.String("config-name", "", "Configuration resource for a monitor agent.")
 	configNamespace := flag.String("config-namespace", "", "Namespace of the monitor configuration resource.")
 	configVersion := flag.String("config-version", "", "UID and generation of the monitor configuration.")
@@ -84,17 +83,10 @@ func main() {
 	namespace := os.Getenv("NNCO_NAMESPACE")
 	if *agent != "" {
 		ctx := log.IntoContext(ctrl.SetupSignalHandler(), ctrl.Log.WithName("agent"))
-		if *agent == "tcp-listener" {
-			if err := controller.RunTCPListener(ctx, *listenerPort); err != nil {
-				setupLog.Error(err, "TCP listener stopped")
-				os.Exit(1)
-			}
-			return
-		}
 		apiClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 		if err == nil {
 			err = controller.RunMonitor(ctx, apiClient, controller.MonitorKind(*agent),
-				client.ObjectKey{Namespace: *configNamespace, Name: *configName}, *configVersion, namespace)
+				client.ObjectKey{Namespace: *configNamespace, Name: *configName}, *configVersion, os.Getenv("NNCO_NODE_NAME"))
 		}
 		if err != nil {
 			setupLog.Error(err, "Monitor stopped", "agent", *agent)
@@ -106,12 +98,12 @@ func main() {
 	var workloads *controller.WorkloadSettings
 	if workloadImage := os.Getenv("NNCO_WORKLOAD_IMAGE"); workloadImage != "" {
 		workloads = &controller.WorkloadSettings{
-			Namespace:              namespace,
-			Image:                  workloadImage,
-			ListenerServiceAccount: os.Getenv("NNCO_LISTENER_SERVICE_ACCOUNT"),
-			MonitorServiceAccount:  os.Getenv("NNCO_MONITOR_SERVICE_ACCOUNT"),
+			Namespace:                namespace,
+			Image:                    workloadImage,
+			TCPMonitorServiceAccount: os.Getenv("NNCO_TCP_MONITOR_SERVICE_ACCOUNT"),
+			MonitorServiceAccount:    os.Getenv("NNCO_MONITOR_SERVICE_ACCOUNT"),
 		}
-		if workloads.Namespace == "" || workloads.ListenerServiceAccount == "" || workloads.MonitorServiceAccount == "" {
+		if workloads.Namespace == "" || workloads.TCPMonitorServiceAccount == "" || workloads.MonitorServiceAccount == "" {
 			setupLog.Error(nil, "Workload namespace and service accounts must be configured")
 			os.Exit(1)
 		}

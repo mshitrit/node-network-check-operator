@@ -19,8 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"net"
-	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -34,53 +32,57 @@ import (
 type MonitorKind string
 
 const (
-	ServiceMonitor   MonitorKind = "service-monitor"
-	HandshakeMonitor MonitorKind = "handshake-monitor"
+	ServiceMonitor MonitorKind = "service-monitor"
+	TCPMonitor     MonitorKind = "tcp-monitor"
+
+	tcpProbeTimeout = time.Second
 )
 
 func (m MonitorKind) enabled(mode networkv1alpha1.NetworkDetectionMode) bool {
 	return mode == networkv1alpha1.NetworkDetectionModeBoth ||
 		(m == ServiceMonitor && mode == networkv1alpha1.NetworkDetectionModeService) ||
-		(m == HandshakeMonitor && mode == networkv1alpha1.NetworkDetectionModeTCPListener)
+		(m == TCPMonitor && mode == networkv1alpha1.NetworkDetectionModeTCPListener)
 }
 
 func (m MonitorKind) condition() corev1.NodeConditionType {
-	if m == HandshakeMonitor {
+	if m == TCPMonitor {
 		return networkv1alpha1.NodeConditionTCPListenerUnhealthy
 	}
 	return networkv1alpha1.NodeConditionServiceUnhealthy
 }
 
 func (m MonitorKind) endpoint() string {
-	if m == HandshakeMonitor {
-		return "TCP listener"
+	if m == TCPMonitor {
+		return "TCP endpoint"
 	}
 	return "Kubelet service"
 }
 
 func (m MonitorKind) failureReason() string {
-	if m == HandshakeMonitor {
-		return "TCPListenerUnreachable"
+	if m == TCPMonitor {
+		return "TCPEndpointUnreachable"
 	}
 	return serviceFailureReason
 }
 
-// RunMonitor checks nodes while the configuration used for this pod is active.
-func RunMonitor(ctx context.Context, c client.Client, monitor MonitorKind, key client.ObjectKey, version, namespace string) error {
-	if monitor != ServiceMonitor && monitor != HandshakeMonitor {
+// RunMonitor runs the configured check while the pod's configuration is active.
+func RunMonitor(ctx context.Context, c client.Client, monitor MonitorKind, key client.ObjectKey, version, nodeName string) error {
+	if monitor != ServiceMonitor && monitor != TCPMonitor {
 		return fmt.Errorf("unknown monitor %q", monitor)
 	}
-	if key.Name == "" || key.Namespace == "" || version == "" || namespace == "" {
-		return fmt.Errorf("monitor requires a configuration name, namespace, version, and workload namespace")
+	if key.Name == "" || key.Namespace == "" || version == "" {
+		return fmt.Errorf("monitor requires a configuration name, namespace, and version")
+	}
+	if monitor == TCPMonitor && nodeName == "" {
+		return fmt.Errorf("TCP monitor requires a node name")
 	}
 	logger := log.FromContext(ctx).WithName(string(monitor))
 	ctx = log.IntoContext(ctx, logger)
 	r := &NodeNetworkCheckOperatorConfigReconciler{
-		Client:            c,
-		monitor:           monitor,
-		listenerNamespace: namespace,
-		serviceChecks:     make(map[string]*serviceCheckState),
+		Client:        c,
+		serviceChecks: make(map[string]*serviceCheckState),
 	}
+	var tcpFailures int32
 	next := time.Duration(0)
 	for ctx.Err() == nil {
 		timer := time.NewTimer(next)
@@ -108,6 +110,17 @@ func RunMonitor(ctx context.Context, c client.Client, monitor MonitorKind, key c
 		if !monitor.enabled(settings.mode) {
 			return fmt.Errorf("%s is disabled in %s mode", monitor, settings.mode)
 		}
+		if monitor == TCPMonitor {
+			if settings.tcpCheck == nil {
+				return fmt.Errorf("TCP monitor requires one TCP endpoint in checks")
+			}
+			started := time.Now()
+			if err := r.checkLocalTCP(ctx, config, settings, nodeName, &tcpFailures); err != nil && ctx.Err() == nil {
+				logger.Error(err, "Check TCP endpoint", "node", nodeName)
+			}
+			next = max(settings.interval-time.Since(started), time.Millisecond)
+			continue
+		}
 		result, err := r.checkNodes(ctx, config, settings)
 		if err != nil {
 			logger.Error(err, "Check node reachability")
@@ -120,53 +133,32 @@ func RunMonitor(ctx context.Context, c client.Client, monitor MonitorKind, key c
 	return nil
 }
 
-func (r *NodeNetworkCheckOperatorConfigReconciler) readyListeners(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig) (map[string]bool, error) {
-	pods := &corev1.PodList{}
-	if err := r.List(ctx, pods, client.InNamespace(r.listenerNamespace), client.MatchingLabels(workloadLabels(listenerName))); err != nil {
-		return nil, err
+func (r *NodeNetworkCheckOperatorConfigReconciler) checkLocalTCP(ctx context.Context, config *networkv1alpha1.NodeNetworkCheckOperatorConfig, settings networkCheckSettings, nodeName string, failures *int32) error {
+	node := &corev1.Node{}
+	if err := r.reader().Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
+		return client.IgnoreNotFound(err)
 	}
-	ready := make(map[string]bool)
-	for _, pod := range pods.Items {
-		if pod.Annotations[configVersionKey] != workloadVersion(config) || pod.DeletionTimestamp != nil {
-			continue
+	check := settings.tcpCheck
+	probeErr := probeTCP(ctx, check.Host, int(check.Port), tcpProbeTimeout)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	condition := nodeCondition(node, TCPMonitor.condition())
+	if probeErr == nil {
+		*failures = 0
+		if condition != nil {
+			return r.updateMonitorCondition(ctx, node, TCPMonitor, false, 0, config, false)
 		}
-		for _, condition := range pod.Status.Conditions {
-			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
-				ready[pod.Spec.NodeName] = true
-				break
-			}
-		}
+		return nil
 	}
-	return ready, nil
-}
 
-func validListenerPort(port int) bool {
-	return port >= 1024 && port <= 65535 && port != kubeletPort
-}
-
-// RunTCPListener accepts and closes connections without reading application data.
-func RunTCPListener(ctx context.Context, port int) error {
-	if !validListenerPort(port) {
-		return fmt.Errorf("invalid TCP listener port %d", port)
+	if *failures < settings.threshold {
+		*failures++
 	}
-	cfg := net.ListenConfig{}
-	listener, err := cfg.Listen(ctx, "tcp", ":"+strconv.Itoa(port))
-	if err != nil {
-		return err
+	log.FromContext(ctx).V(1).Info("TCP endpoint check failed",
+		"node", nodeName, "host", check.Host, "port", check.Port, "failures", *failures, "error", probeErr)
+	if *failures >= settings.threshold && (condition == nil || condition.Status != corev1.ConditionTrue) {
+		return r.updateMonitorCondition(ctx, node, TCPMonitor, true, settings.threshold, config, false)
 	}
-	defer listener.Close()
-	stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
-	defer stop()
-
-	log.FromContext(ctx).Info("Listening for TCP checks", "port", port)
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		_ = conn.Close()
-	}
+	return nil
 }

@@ -11,6 +11,10 @@ metadata:
 spec:
   # Options: Service, TCPListener, Both.
   networkDetectionMode: Service
-  tcpListenerPort: 19100
+  # Required for TCPListener and Both.
+  # checks:
+  # - type: tcpSocket
+  #   host: endpoint.example.com
+  #   port: 443
   networkCheckIntervalSeconds: 5
   consecutiveFailuresThreshold: 3

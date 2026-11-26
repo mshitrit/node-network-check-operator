@@ -233,6 +233,7 @@ var _ = Describe("Kubelet service checks", func() {
 			}
 			mode := networkv1alpha1.NetworkDetectionModeTCPListener
 			current.Spec.NetworkDetectionMode = &mode
+			current.Spec.Checks = []networkv1alpha1.NetworkCheck{testTCPCheck}
 			if err := k8sClient.Update(ctx, current); err != nil {
 				return err
 			}
@@ -281,6 +282,7 @@ var _ = Describe("Kubelet service checks", func() {
 		config.Spec.NetworkCheckIntervalSeconds = &interval
 		config.Spec.ConsecutiveFailuresThreshold = &threshold
 		config.Spec.NetworkDetectionMode = &mode
+		config.Spec.Checks = []networkv1alpha1.NetworkCheck{testTCPCheck}
 		Expect(k8sClient.Update(ctx, config)).To(Succeed())
 		Expect(reconcile().RequeueAfter).To(Equal(time.Second))
 		Expect(serviceCondition(getNode(nodeA))).To(BeNil())
@@ -384,6 +386,7 @@ var _ = Describe("Kubelet service checks", func() {
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(config), config)).To(Succeed())
 		mode := networkv1alpha1.NetworkDetectionModeTCPListener
 		config.Spec.NetworkDetectionMode = &mode
+		config.Spec.Checks = []networkv1alpha1.NetworkCheck{testTCPCheck}
 		Expect(k8sClient.Update(ctx, config)).To(Succeed())
 		Eventually(func() bool { return serviceCondition(getNode(nodeA)) == nil }, 10*time.Second, 100*time.Millisecond).Should(BeTrue())
 	})
